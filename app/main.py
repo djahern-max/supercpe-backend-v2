@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import cpas, uploads, compliance
+from app.api import cpas, uploads, compliance, time_windows
 
 app = FastAPI(
     title=settings.api_title,
@@ -22,6 +22,7 @@ app.add_middleware(
 app.include_router(cpas.router)
 app.include_router(uploads.router)
 app.include_router(compliance.router)
+app.include_router(time_windows.router)
 
 @app.get("/")
 async def root():
