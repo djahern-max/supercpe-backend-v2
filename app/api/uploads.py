@@ -9,23 +9,22 @@ from app.models.payment import CPASubscription
 import tempfile
 import os
 
-router = APIRouter(prefix="/api/admin", tags=["Admin"])
+router = APIRouter(prefix="/api/upload", tags=["Upload"])
+
 
 @router.post("/upload-cpa-list")
 async def upload_monthly_cpa_list(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
     """Upload monthly OPLC CPA list (Excel file)"""
 
-    if not file.filename.endswith(('.xlsx', '.xls')):
+    if not file.filename.endswith((".xlsx", ".xls")):
         raise HTTPException(
-            status_code=400,
-            detail="File must be Excel format (.xlsx or .xls)"
+            status_code=400, detail="File must be Excel format (.xlsx or .xls)"
         )
 
     # Save uploaded file temporarily
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_file:
         content = await file.read()
         tmp_file.write(content)
         tmp_file_path = tmp_file.name
@@ -38,12 +37,13 @@ async def upload_monthly_cpa_list(
         return {
             "message": "CPA list uploaded successfully",
             "results": results,
-            "filename": file.filename
+            "filename": file.filename,
         }
 
     finally:
         # Clean up temp file
         os.unlink(tmp_file_path)
+
 
 @router.post("/upload-cpe-certificate/{license_number}")
 async def upload_cpe_certificate_premium(
@@ -51,7 +51,7 @@ async def upload_cpe_certificate_premium(
     file: UploadFile = File(...),
     parse_with_ai: bool = True,
     background_tasks: BackgroundTasks = BackgroundTasks(),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """PREMIUM: Upload and permanently store CPE certificates with Professional Management"""
 
@@ -63,22 +63,22 @@ async def upload_cpe_certificate_premium(
     # Check for active premium subscription
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
-    
+
     if not has_subscription:
         raise HTTPException(
-            status_code=402, 
+            status_code=402,
             detail={
                 "error": "Professional Management subscription required",
                 "message": "Upgrade to Professional CPE Management for secure document storage",
                 "benefits": [
                     "Secure, centralized document storage",
-                    "Organized compliance history", 
+                    "Organized compliance history",
                     "Instant professional reports",
-                    "Streamlined renewal preparation"
+                    "Streamlined renewal preparation",
                 ],
                 "pricing": "$58/year - Complete professional management suite",
-                "upgrade_url": "/api/payments/create-subscription"
-            }
+                "upgrade_url": "/api/payments/create-subscription",
+            },
         )
 
     # Upload and parse document with PERMANENT storage
@@ -94,24 +94,21 @@ async def upload_cpe_certificate_premium(
     return {
         "message": "✅ Certificate uploaded and securely stored in Professional Management Suite",
         "file_info": result,
-        "cpa": {
-            "license_number": cpa.license_number,
-            "name": cpa.full_name
-        },
+        "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
         "ai_parsing_enabled": parse_with_ai,
         "parsing_result": result.get("parsing_result"),
         "storage_benefits": {
             "secure_vault": "Documents securely organized in professional management system",
             "ai_analysis": "Smart parsing completed and archived",
             "compliance_tracking": "Added to your comprehensive education record",
-            "professional_ready": "Generate professional reports anytime"
-        }
+            "professional_ready": "Generate professional reports anytime",
+        },
     }
+
 
 @router.get("/cpa-documents/{license_number}")
 async def list_cpa_documents_premium(
-    license_number: str,
-    db: Session = Depends(get_db)
+    license_number: str, db: Session = Depends(get_db)
 ):
     """PREMIUM: List all permanently stored documents"""
 
@@ -123,21 +120,21 @@ async def list_cpa_documents_premium(
     # Check for premium subscription
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
-    
+
     if not has_subscription:
         raise HTTPException(
             status_code=402,
             detail={
-                "error": "Professional Management feature", 
+                "error": "Professional Management feature",
                 "message": "Upgrade to access your organized document library",
                 "preview_message": "You have analyzed certificates, but they're not permanently organized",
                 "upgrade_benefits": [
                     "Access all your CPE certificates anytime",
                     "Professional organization and tracking",
                     "Comprehensive compliance history",
-                    "Streamlined renewal preparation"
-                ]
-            }
+                    "Streamlined renewal preparation",
+                ],
+            },
         )
 
     # Get documents from premium storage
@@ -145,20 +142,15 @@ async def list_cpa_documents_premium(
     documents = storage_service.list_cpa_documents(license_number)
 
     return {
-        "cpa": {
-            "license_number": cpa.license_number,
-            "name": cpa.full_name
-        },
+        "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
         "documents": documents,
         "vault_status": "✅ Professional Management Active",
-        "total_documents": len(documents)
+        "total_documents": len(documents),
     }
 
+
 @router.get("/cpe-records/{license_number}")
-async def get_cpe_records_premium(
-    license_number: str,
-    db: Session = Depends(get_db)
-):
+async def get_cpe_records_premium(license_number: str, db: Session = Depends(get_db)):
     """PREMIUM: Get your complete CPE compliance history"""
 
     from app.models.cpe_record import CPERecord
@@ -171,7 +163,7 @@ async def get_cpe_records_premium(
     # Check for premium subscription
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
-    
+
     if not has_subscription:
         raise HTTPException(
             status_code=402,
@@ -182,33 +174,37 @@ async def get_cpe_records_premium(
                 "professional_value": "Maintain organized records for efficient practice management",
                 "upgrade_benefits": [
                     "Complete CPE compliance history",
-                    "Professional compliance reporting", 
+                    "Professional compliance reporting",
                     "License renewal tracking",
-                    "Organized documentation for any inquiry"
-                ]
-            }
+                    "Organized documentation for any inquiry",
+                ],
+            },
         )
 
     # Get premium CPE records
-    cpe_records = db.query(CPERecord).filter(
-        CPERecord.cpa_license_number == license_number
-    ).order_by(CPERecord.completion_date.desc(), CPERecord.created_at.desc()).all()
+    cpe_records = (
+        db.query(CPERecord)
+        .filter(CPERecord.cpa_license_number == license_number)
+        .order_by(CPERecord.completion_date.desc(), CPERecord.created_at.desc())
+        .all()
+    )
 
     # Calculate compliance metrics
     total_credits = sum(record.cpe_credits for record in cpe_records)
     total_ethics = sum(record.ethics_credits for record in cpe_records)
 
     return {
-        "cpa": {
-            "license_number": cpa.license_number,
-            "name": cpa.full_name
-        },
+        "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
         "summary": {
             "total_records": len(cpe_records),
             "total_cpe_credits": total_credits,
             "total_ethics_credits": total_ethics,
-            "average_confidence": sum(r.confidence_score for r in cpe_records) / len(cpe_records) if cpe_records else 0,
-            "vault_status": "✅ Professional Management Active"
+            "average_confidence": (
+                sum(r.confidence_score for r in cpe_records) / len(cpe_records)
+                if cpe_records
+                else 0
+            ),
+            "vault_status": "✅ Professional Management Active",
         },
         "records": [
             {
@@ -222,11 +218,12 @@ async def get_cpe_records_premium(
                 "confidence_score": record.confidence_score,
                 "is_verified": record.is_verified,
                 "original_filename": record.original_filename,
-                "created_at": record.created_at
+                "created_at": record.created_at,
             }
             for record in cpe_records
-        ]
+        ],
     }
+
 
 # NEW: STEP 3 - Review and Save (Premium)
 @router.post("/save-reviewed-certificate/{license_number}")
@@ -240,7 +237,7 @@ async def save_reviewed_certificate(
     completion_date: str = "",  # ISO format: 2025-06-02
     certificate_number: str = "",
     background_tasks: BackgroundTasks = BackgroundTasks(),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """PREMIUM: Save user-reviewed CPE data after analysis and corrections"""
 
@@ -252,7 +249,7 @@ async def save_reviewed_certificate(
     # Check for premium subscription
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
-    
+
     if not has_subscription:
         raise HTTPException(
             status_code=402,
@@ -263,17 +260,17 @@ async def save_reviewed_certificate(
                     "Save corrected and verified CPE records",
                     "Secure document storage with your data",
                     "Professional compliance tracking",
-                    "Generate reports with accurate information"
+                    "Generate reports with accurate information",
                 ],
                 "user_data_note": "Your corrections are ready to save - upgrade to preserve them",
-                "pricing": "$58/year - Complete professional management suite"
-            }
+                "pricing": "$58/year - Complete professional management suite",
+            },
         )
 
     # Upload document to permanent storage
     storage_service = DocumentStorageService()
     storage_service.db = db
-    
+
     # Upload the file (without AI parsing since user already reviewed)
     upload_result = await storage_service.upload_and_parse_certificate(
         file, license_number, parse_with_ai=False  # Skip AI since user provided data
@@ -295,7 +292,9 @@ async def save_reviewed_certificate(
         except ValueError:
             # Try other common formats
             try:
-                parsed_completion_date = datetime.strptime(completion_date, "%Y-%m-%d").date()
+                parsed_completion_date = datetime.strptime(
+                    completion_date, "%Y-%m-%d"
+                ).date()
             except ValueError:
                 pass  # Leave as None if can't parse
 
@@ -313,15 +312,17 @@ async def save_reviewed_certificate(
         confidence_score=1.0,  # 100% confidence since user reviewed
         parsing_method="user_reviewed",
         raw_text=None,  # Not needed since user provided final data
-        parsing_notes=json.dumps([
-            "✅ User reviewed and confirmed all data",
-            "✅ Professional quality assurance complete",
-            f"✅ {cpe_credits} CPE credits verified",
-            f"✅ Saved to Professional Management system"
-        ]),
+        parsing_notes=json.dumps(
+            [
+                "✅ User reviewed and confirmed all data",
+                "✅ Professional quality assurance complete",
+                f"✅ {cpe_credits} CPE credits verified",
+                f"✅ Saved to Professional Management system",
+            ]
+        ),
         is_verified=True,
         verified_by="user_review",
-        verification_date=datetime.now()
+        verification_date=datetime.now(),
     )
 
     db.add(cpe_record)
@@ -331,15 +332,12 @@ async def save_reviewed_certificate(
     return {
         "message": "✅ Certificate successfully saved to Professional Management Suite",
         "status": "saved",
-        "cpa": {
-            "license_number": cpa.license_number,
-            "name": cpa.full_name
-        },
+        "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
         "file_info": {
             "filename": upload_result["filename"],
             "original_name": upload_result["original_name"],
             "file_url": upload_result["file_url"],
-            "upload_date": upload_result["upload_date"]
+            "upload_date": upload_result["upload_date"],
         },
         "cpe_record": {
             "id": cpe_record.id,
@@ -347,30 +345,33 @@ async def save_reviewed_certificate(
             "ethics_credits": cpe_record.ethics_credits,
             "course_title": cpe_record.course_title,
             "provider": cpe_record.provider,
-            "completion_date": cpe_record.completion_date.isoformat() if cpe_record.completion_date else None,
+            "completion_date": (
+                cpe_record.completion_date.isoformat()
+                if cpe_record.completion_date
+                else None
+            ),
             "certificate_number": cpe_record.certificate_number,
             "confidence_score": cpe_record.confidence_score,
-            "verification_status": "✅ User verified"
+            "verification_status": "✅ User verified",
         },
         "professional_benefits": {
             "document_storage": "Certificate securely stored in your professional vault",
             "data_accuracy": "Your reviewed data saved with 100% confidence",
             "compliance_tracking": "Added to your comprehensive education record",
-            "reporting_ready": "Available for professional compliance reports"
+            "reporting_ready": "Available for professional compliance reports",
         },
         "next_steps": [
             "View your complete CPE history at /api/admin/cpe-records/{license_number}",
             "Generate compliance reports anytime",
-            "Upload additional certificates for complete tracking"
-        ]
+            "Upload additional certificates for complete tracking",
+        ],
     }
+
 
 # NEW: FREE TIER - The Freemium Hook
 @router.post("/analyze-certificate/{license_number}")
 async def analyze_certificate_preview(
-    license_number: str,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    license_number: str, file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
     """FREE: AI-powered certificate analysis - Preview mode (results not saved)"""
 
@@ -394,68 +395,69 @@ async def analyze_certificate_preview(
 
     try:
         # Parse with AI (but don't save results)
-        parsing_result = await vision_service.parse_document(temp_file_path, file_extension)
+        parsing_result = await vision_service.parse_document(
+            temp_file_path, file_extension
+        )
 
         return {
             "message": "🎯 Certificate analyzed successfully with AI",
             "filename": file.filename,
-            "cpa": {
-                "license_number": cpa.license_number,
-                "name": cpa.full_name
-            },
+            "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
             "parsing_result": parsing_result,
             "ai_analysis_quality": {
                 "confidence": f"{parsing_result.get('confidence_score', 0):.1%}",
-                "fields_detected": len([
-                    f for f in parsing_result.get('parsed_data', {}).values() 
-                    if isinstance(f, dict) and f.get('confidence', 0) > 0.5
-                ]),
-                "extraction_notes": "✅ Professional-grade AI analysis complete"
+                "fields_detected": len(
+                    [
+                        f
+                        for f in parsing_result.get("parsed_data", {}).values()
+                        if isinstance(f, dict) and f.get("confidence", 0) > 0.5
+                    ]
+                ),
+                "extraction_notes": "✅ Professional-grade AI analysis complete",
             },
             "storage_status": {
                 "current_tier": "FREE ANALYSIS",
                 "document_saved": False,
                 "analysis_saved": False,
-                "note": "Results are temporary - upgrade for permanent organization"
+                "note": "Results are temporary - upgrade for permanent organization",
             },
             "upgrade_opportunity": {
                 "headline": "📋 Professional CPE Management Suite",
                 "value_proposition": "Streamline your continuing education with organized, accessible records",
                 "premium_benefits": [
                     "🗂️ Centralized document management - All certificates in one secure location",
-                    "📊 Instant compliance reporting - Professional summaries on demand", 
+                    "📊 Instant compliance reporting - Professional summaries on demand",
                     "📈 Multi-year tracking - Complete educational history at your fingertips",
                     "🔄 Renewal preparation - Automated compliance monitoring",
-                    "📋 Board-ready documentation - Organized records for any inquiry"
+                    "📋 Board-ready documentation - Organized records for any inquiry",
                 ],
                 "social_proof": "Trusted by over 500 practicing CPAs for professional record management",
                 "pricing": {
                     "annual": "$58/year",
-                    "monthly": "$6.99/month", 
-                    "value": "Professional document management for $4.83 per month"
+                    "monthly": "$6.99/month",
+                    "value": "Professional document management for $4.83 per month",
                 },
                 "efficiency_focus": "Save time and stay organized with centralized CPE management",
                 "cta": "Upgrade to Professional Management",
-                "guarantee": "30-day satisfaction guarantee"
+                "guarantee": "30-day satisfaction guarantee",
             },
             "next_steps": {
                 "step_1": "✅ Analysis complete - Review the fields below",
-                "step_2": "✏️ Edit any incorrect information", 
+                "step_2": "✏️ Edit any incorrect information",
                 "step_3": "💾 Upgrade to save permanently with corrections",
-                "save_endpoint": "/api/admin/save-reviewed-certificate/{license_number}"
-            }
+                "save_endpoint": "/api/admin/save-reviewed-certificate/{license_number}",
+            },
         }
 
     finally:
         # Clean up temp file
         os.unlink(temp_file_path)
 
+
 # Keep the old endpoint name for backwards compatibility but redirect to new strategy
 @router.post("/test-ai-parsing/{license_number}")
 async def test_ai_parsing_redirect(
-    license_number: str,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    license_number: str, file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
     """DEPRECATED: Use /analyze-certificate/ instead"""
     return await analyze_certificate_preview(license_number, file, db)
