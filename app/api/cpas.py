@@ -8,6 +8,7 @@ from datetime import date
 
 router = APIRouter(prefix="/api/cpas", tags=["CPAs"])
 
+
 class CPAResponse(BaseModel):
     id: int
     license_number: str
@@ -18,33 +19,65 @@ class CPAResponse(BaseModel):
     is_premium: bool
     total_cpe_hours: int
     ethics_hours: int
-    
+
     class Config:
         from_attributes = True
 
+
 @router.get("/", response_model=List[CPAResponse])
-async def get_all_cpas(
-    skip: int = 0, 
-    limit: int = 100, 
-    db: Session = Depends(get_db)
-):
+async def get_all_cpas(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     """Get list of all CPAs"""
     cpas = db.query(CPA).offset(skip).limit(limit).all()
     return cpas
 
+
+@router.get("/search")
+async def search_cpas(q: str, limit: int = 10, db: Session = Depends(get_db)):
+    """Search CPAs by name or license number"""
+
+    if not q or len(q.strip()) < 2:
+        raise HTTPException(
+            status_code=400, detail="Search query must be at least 2 characters"
+        )
+
+    search_term = q.strip()
+
+    # Search by license number (exact match first)
+    if search_term.isdigit():
+        license_match = (
+            db.query(CPA)
+            .filter(CPA.license_number == search_term, CPA.status == "Active")
+            .first()
+        )
+
+        if license_match:
+            return {
+                "results": [license_match],
+                "total": 1,
+                "search_type": "license_exact",
+            }
+
+    # Search by name (case insensitive, partial match)
+    name_results = (
+        db.query(CPA)
+        .filter(CPA.full_name.ilike(f"%{search_term}%"), CPA.status == "Active")
+        .limit(limit)
+        .all()
+    )
+
+    return {"results": name_results, "total": len(name_results), "search_type": "name"}
+
+
 @router.get("/{license_number}", response_model=CPAResponse)
-async def get_cpa_by_license(
-    license_number: str, 
-    db: Session = Depends(get_db)
-):
+async def get_cpa_by_license(license_number: str, db: Session = Depends(get_db)):
     """Get specific CPA by license number"""
     cpa = db.query(CPA).filter(CPA.license_number == license_number).first()
     if not cpa:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="CPA not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="CPA not found"
         )
     return cpa
+
 
 @router.get("/stats/summary")
 async def get_cpa_stats(db: Session = Depends(get_db)):
@@ -52,10 +85,10 @@ async def get_cpa_stats(db: Session = Depends(get_db)):
     total_cpas = db.query(CPA).count()
     active_cpas = db.query(CPA).filter(CPA.status == "Active").count()
     premium_cpas = db.query(CPA).filter(CPA.is_premium == True).count()
-    
+
     return {
         "total_cpas": total_cpas,
         "active_cpas": active_cpas,
         "premium_cpas": premium_cpas,
-        "free_cpas": active_cpas - premium_cpas
+        "free_cpas": active_cpas - premium_cpas,
     }
