@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api import cpas, uploads, compliance, time_windows, payments
+from fastapi.routing import APIRoute
+from fastapi.responses import PlainTextResponse
 
 app = FastAPI(
     title=settings.api_title,
@@ -24,6 +26,20 @@ app.include_router(uploads.router)
 app.include_router(compliance.router)
 app.include_router(time_windows.router)
 app.include_router(payments.router)
+
+
+@app.get("/routes-simple", response_class=PlainTextResponse)
+async def get_routes_simple():
+    """
+    Returns a concise list of all routes with their paths and methods.
+    """
+    routes = []
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            methods = ", ".join(route.methods)
+            routes.append(f"{methods}: {route.path}")
+
+    return "\n".join(routes)
 
 
 @app.get("/")
