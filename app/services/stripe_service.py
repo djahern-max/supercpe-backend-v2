@@ -8,13 +8,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Configure Stripe
-stripe.api_key = settings.stripe_secret_key
-
 
 class StripeService:
     def __init__(self, db: Session):
         self.db = db
+        # Set API key per instance, not globally
 
     def create_payment_intent(
         self,
@@ -26,6 +24,7 @@ class StripeService:
     ) -> dict:
         """Create a Stripe Payment Intent"""
         try:
+            stripe.api_key = settings.stripe_secret_key
             # Create payment intent
             intent = stripe.PaymentIntent.create(
                 amount=int(amount * 100),  # Convert to cents
@@ -67,6 +66,7 @@ class StripeService:
     ) -> dict:
         """Create a Stripe Subscription"""
         try:
+            stripe.api_key = settings.stripe_secret_key
             # Create customer
             customer = stripe.Customer.create(
                 metadata={"cpa_license_number": cpa_license_number}
@@ -96,6 +96,7 @@ class StripeService:
     def check_payment_status(self, payment_intent_id: str) -> dict:
         """Check payment status"""
         try:
+            stripe.api_key = settings.stripe_secret_key
             intent = stripe.PaymentIntent.retrieve(payment_intent_id)
 
             # Update database
