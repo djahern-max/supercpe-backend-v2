@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.cpa import CPA
-from app.services.nh_compliance import NHComplianceService, get_cpa_compliance_dashboard
+from app.services.nh_compliance import get_cpa_compliance_dashboard
+from app.services.nh_compliance import NHComplianceService
 from typing import Dict, Any
 
 router = APIRouter(prefix="/api/compliance", tags=["Compliance"])
