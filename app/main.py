@@ -11,10 +11,14 @@ app = FastAPI(
     description="SuperCPE v2 - Simplified CPA Compliance Tracking",
 )
 
-# CORS middleware for React frontend
+# CORS middleware for React frontend - UPDATED TO INCLUDE PRODUCTION
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React dev server
+    allow_origins=[
+        "http://localhost:3000",  # React dev server
+        "https://nh.supercpe.com",  # Production frontend
+        "https://*.supercpe.com",  # Any supercpe.com subdomain
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
