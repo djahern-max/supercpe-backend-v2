@@ -184,3 +184,73 @@ class StripeService:
                 ],
             },
         }
+
+    def create_checkout_session(
+        self,
+        customer_email,
+        license_number,
+        price_id=None,
+        product_name=None,
+        unit_amount=None,
+        recurring=None,
+        success_url=None,
+        cancel_url=None,
+        metadata=None,
+    ):
+        """Create a Stripe checkout session for subscription"""
+
+        stripe.api_key = self.stripe_secret_key
+
+        # Default URLs if not provided
+        if not success_url:
+            success_url = f"{settings.FRONTEND_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}"
+        if not cancel_url:
+            cancel_url = f"{settings.FRONTEND_URL}/dashboard/{license_number}?payment_cancelled=true"
+
+        # Default metadata
+        if metadata is None:
+            metadata = {"license_number": license_number}
+
+        # Create session with price ID if provided
+        if price_id:
+            session = stripe.checkout.Session.create(
+                customer_email=customer_email,
+                payment_method_types=["card"],
+                line_items=[
+                    {
+                        "price": price_id,
+                        "quantity": 1,
+                    },
+                ],
+                mode="subscription",
+                success_url=success_url,
+                cancel_url=cancel_url,
+                metadata=metadata,
+            )
+        # Create session with product details if no price ID
+        elif product_name and unit_amount and recurring:
+            session = stripe.checkout.Session.create(
+                customer_email=customer_email,
+                payment_method_types=["card"],
+                line_items=[
+                    {
+                        "price_data": {
+                            "currency": "usd",
+                            "product_data": {
+                                "name": product_name,
+                            },
+                            "unit_amount": unit_amount,  # Amount in cents
+                            "recurring": recurring,
+                        },
+                        "quantity": 1,
+                    },
+                ],
+                mode="subscription",
+                success_url=success_url,
+                cancel_url=cancel_url,
+                metadata=metadata,
+            )
+        else:
+            raise ValueError("Either price_id or product details must be provided")
+
+        return session
