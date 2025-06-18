@@ -1,6 +1,6 @@
 import stripe
 from app.core.config import settings
-from app.models.payment import Payment, CPASubscription
+from app.models.payment import Payment
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import json
@@ -126,7 +126,7 @@ class StripeService:
         """Activate CPA subscription based on payment"""
         if payment.payment_type == "license_annual":
             # Create/update annual subscription
-            subscription = CPASubscription(
+            subscription = Subscription(
                 cpa_license_number=payment.cpa_license_number,
                 subscription_type="premium",
                 document_uploads_allowed=True,
@@ -140,11 +140,11 @@ class StripeService:
     def has_active_subscription(self, cpa_license_number: str) -> bool:
         """Check if CPA has active subscription"""
         subscription = (
-            self.db.query(CPASubscription)
+            self.db.query(Subscription)
             .filter(
-                CPASubscription.cpa_license_number == cpa_license_number,
-                CPASubscription.is_active == True,
-                CPASubscription.expires_at > datetime.now(),
+                Subscription.cpa_license_number == cpa_license_number,
+                Subscription.is_active == True,
+                Subscription.expires_at > datetime.now(),
             )
             .first()
         )

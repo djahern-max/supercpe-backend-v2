@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.services.stripe_service import StripeService
 from app.models.cpa import CPA
-from app.models.payment import Payment, CPASubscription
+from app.models.payment import Payment
+from app.models.user import Subscription
 from pydantic import BaseModel
 from typing import Dict, Any
 import stripe
@@ -68,10 +69,10 @@ async def get_subscription_status(license_number: str, db: Session = Depends(get
 
     # Get subscription details
     subscription = (
-        db.query(CPASubscription)
+        db.query(Subscription)
         .filter(
-            CPASubscription.cpa_license_number == license_number,
-            CPASubscription.is_active == True,
+            Subscription.cpa_license_number == license_number,
+            Subscription.is_active == True,
         )
         .first()
     )

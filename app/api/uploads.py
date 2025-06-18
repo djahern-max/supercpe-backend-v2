@@ -6,7 +6,7 @@ from app.services.document_storage import DocumentStorageService
 from app.services.stripe_service import StripeService
 from app.models.cpa import CPA
 from app.models.cpe_record import CPERecord
-from app.models.payment import CPASubscription
+# from app.models.user import Subscription
 import tempfile
 import os
 from datetime import datetime
