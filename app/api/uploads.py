@@ -604,3 +604,299 @@ async def delete_certificate(
         "record_id": record_id,
         "license_number": license_number,
     }
+
+
+@router.get("/free-tier-status/{license_number}")
+async def get_free_tier_status(license_number: str, db: Session = Depends(get_db)):
+    """Get current free tier upload status"""
+
+    # Verify CPA exists
+    cpa = db.query(CPA).filter(CPA.license_number == license_number).first()
+    if not cpa:
+        raise HTTPException(status_code=404, detail="CPA license number not found")
+
+    # Count existing free uploads for this license
+    existing_free_uploads = (
+        db.query(CPERecord)
+        .filter(
+            CPERecord.cpa_license_number == license_number,
+            CPERecord.storage_tier == "free",
+        )
+        .count()
+    )
+
+    remaining_uploads = max(0, MAX_FREE_UPLOADS - existing_free_uploads)
+
+    # Check if user has premium subscription
+    stripe_service = StripeService(db)
+    has_subscription = stripe_service.has_active_subscription(license_number)
+
+    return {
+        "license_number": license_number,
+        "cpa_name": cpa.full_name,
+        "uploads_used": existing_free_uploads,
+        "uploads_remaining": remaining_uploads,
+        "max_free_uploads": MAX_FREE_UPLOADS,
+        "at_limit": existing_free_uploads >= MAX_FREE_UPLOADS,
+        "has_premium_subscription": has_subscription,
+        "status": (
+            "premium"
+            if has_subscription
+            else ("available" if remaining_uploads > 0 else "limit_reached")
+        ),
+        "upgrade_required": existing_free_uploads >= MAX_FREE_UPLOADS
+        and not has_subscription,
+        "message": (
+            f"✅ {remaining_uploads} uploads remaining with full functionality"
+            if remaining_uploads > 0
+            else "🎯 Time to upgrade! You've used all 10 free uploads."
+        ),
+    }
+
+
+@router.post("/upload-certificate-free/{license_number}")
+async def upload_certificate_free_tier(
+    license_number: str,
+    file: UploadFile = File(...),
+    parse_with_ai: bool = True,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db),
+):
+    """ENHANCED FREE TIER: License-based uploads - No authentication required"""
+
+    # Verify CPA exists in your CPA database
+    cpa = db.query(CPA).filter(CPA.license_number == license_number).first()
+    if not cpa:
+        raise HTTPException(
+            status_code=404, detail="CPA license number not found in NH database"
+        )
+
+    # Check free upload limit using license number directly
+    existing_free_uploads = (
+        db.query(CPERecord)
+        .filter(
+            CPERecord.cpa_license_number == license_number,
+            CPERecord.storage_tier == "free",
+        )
+        .count()
+    )
+
+    if existing_free_uploads >= MAX_FREE_UPLOADS:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "Free upload limit reached",
+                "message": f"You've used all {MAX_FREE_UPLOADS} free uploads with full functionality",
+                "cpa_info": {
+                    "license_number": license_number,
+                    "name": cpa.full_name,
+                    "uploads_completed": existing_free_uploads,
+                },
+                "upgrade_flow": {
+                    "step_1": "Create account with email (required for billing)",
+                    "step_2": "Choose Professional plan ($96/year)",
+                    "step_3": "All your free uploads will be preserved",
+                    "benefit": "Continue with unlimited uploads + premium features",
+                },
+                "benefits_already_received": [
+                    "🤖 AI-powered certificate analysis",
+                    "☁️ Secure Digital Ocean Spaces storage",
+                    "📊 Real-time compliance tracking",
+                    "📋 Professional audit presentation tools",
+                ],
+                "upgrade_url": f"/upgrade?license={license_number}",
+                "pricing": "$96/year - Complete professional management suite",
+            },
+        )
+
+    try:
+        # Step 1: Upload to Digital Ocean Spaces
+        storage_service = DocumentStorageService()
+        upload_result = await storage_service.upload_cpe_certificate(
+            file, license_number
+        )
+
+        if not upload_result["success"]:
+            raise HTTPException(status_code=500, detail=upload_result["error"])
+
+        # Step 2: Parse with AI (if enabled)
+        parsing_result = None
+        if parse_with_ai:
+            from app.services.vision_service import CPEParsingService
+            import tempfile
+
+            vision_service = CPEParsingService()
+            file_extension = os.path.splitext(file.filename)[1].lower()
+
+            # Save file temporarily for AI analysis
+            with tempfile.NamedTemporaryFile(
+                suffix=file_extension, delete=False
+            ) as temp_file:
+                await file.seek(0)  # Reset file pointer
+                content = await file.read()
+                temp_file.write(content)
+                temp_file_path = temp_file.name
+
+            try:
+                # Parse with AI
+                parsing_result = await vision_service.parse_document(
+                    temp_file_path, file_extension
+                )
+            finally:
+                # Clean up temp file
+                os.unlink(temp_file_path)
+
+        # Step 3: Extract parsed data
+        parsed_data = {}
+        if parsing_result and parsing_result.get("success"):
+            parsed_data = parsing_result.get("parsed_data", {})
+
+        # Step 4: Parse completion date
+        completion_date_str = parsed_data.get("completion_date", {}).get("value", "")
+        parsed_completion_date = None
+        if completion_date_str:
+            try:
+                parsed_completion_date = datetime.fromisoformat(
+                    completion_date_str
+                ).date()
+            except ValueError:
+                try:
+                    parsed_completion_date = datetime.strptime(
+                        completion_date_str, "%Y-%m-%d"
+                    ).date()
+                except ValueError:
+                    parsed_completion_date = datetime.utcnow().date()
+
+        # Step 5: Create CPE record with FULL functionality
+        cpe_record = CPERecord(
+            # Using your existing model fields
+            cpa_license_number=license_number,
+            document_filename=upload_result.get("filename", ""),
+            original_filename=file.filename,
+            # CPE details from AI parsing
+            cpe_credits=float(parsed_data.get("cpe_hours", {}).get("value", 0.0)),
+            ethics_credits=float(parsed_data.get("ethics_hours", {}).get("value", 0.0)),
+            course_title=parsed_data.get("course_title", {}).get(
+                "value", "Unknown Course"
+            ),
+            provider=parsed_data.get("provider", {}).get("value", "Unknown Provider"),
+            completion_date=parsed_completion_date or datetime.utcnow().date(),
+            certificate_number=parsed_data.get("certificate_number", {}).get(
+                "value", ""
+            ),
+            # Parsing metadata
+            confidence_score=(
+                parsing_result.get("confidence_score", 0.0) if parsing_result else 0.0
+            ),
+            parsing_method="google_vision" if parse_with_ai else "manual",
+            raw_text=parsing_result.get("raw_text", "") if parsing_result else "",
+            # FREE TIER STORAGE
+            storage_tier="free",
+            # Verification status
+            is_verified=False,
+        )
+
+        db.add(cpe_record)
+        db.commit()
+        db.refresh(cpe_record)
+
+        # Calculate remaining uploads
+        remaining_uploads = MAX_FREE_UPLOADS - (existing_free_uploads + 1)
+
+        return {
+            "message": "🎉 Certificate uploaded successfully with FULL functionality!",
+            "filename": file.filename,
+            "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
+            "parsing_result": parsing_result,
+            "storage_info": {
+                "uploaded_to_digital_ocean": True,
+                "permanent_storage": True,
+                "secure_url": upload_result.get("file_url"),
+                "storage_tier": "free",
+                "no_account_required": True,
+            },
+            "compliance_tracking": {
+                "cpe_hours_added": cpe_record.cpe_credits,
+                "ethics_hours_added": cpe_record.ethics_credits,
+                "database_record_id": cpe_record.id,
+                "tracked_by_license": license_number,
+            },
+            "free_tier_status": {
+                "uploads_used": existing_free_uploads + 1,
+                "remaining_uploads": remaining_uploads,
+                "max_free_uploads": MAX_FREE_UPLOADS,
+                "tier": "ENHANCED FREE - NO REGISTRATION REQUIRED",
+            },
+            "seamless_upgrade_path": {
+                "when_needed": f"After {remaining_uploads} more uploads",
+                "process": "Simple email + payment → All data preserved",
+                "benefit": "Unlimited uploads + premium features",
+                "no_data_loss": f"Your {existing_free_uploads + 1} certificates will remain accessible",
+            },
+            "next_steps": [
+                f"✅ Certificate #{existing_free_uploads + 1} of {MAX_FREE_UPLOADS} processed",
+                "📊 View your compliance dashboard",
+                "📋 Generate audit presentation",
+                (
+                    f"⬆️ Upgrade available after {remaining_uploads} more uploads"
+                    if remaining_uploads > 0
+                    else "⬆️ Ready to upgrade for unlimited uploads!"
+                ),
+            ],
+        }
+
+    except Exception as e:
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error in license-based free upload: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+# Also add this new endpoint:
+@router.get("/free-tier-status/{license_number}")
+async def get_free_tier_status(license_number: str, db: Session = Depends(get_db)):
+    """Get current free tier upload status"""
+
+    # Verify CPA exists
+    cpa = db.query(CPA).filter(CPA.license_number == license_number).first()
+    if not cpa:
+        raise HTTPException(status_code=404, detail="CPA license number not found")
+
+    # Count existing free uploads for this license
+    existing_free_uploads = (
+        db.query(CPERecord)
+        .filter(
+            CPERecord.cpa_license_number == license_number,
+            CPERecord.storage_tier == "free",
+        )
+        .count()
+    )
+
+    remaining_uploads = max(0, MAX_FREE_UPLOADS - existing_free_uploads)
+
+    # Check if user has premium subscription
+    stripe_service = StripeService(db)
+    has_subscription = stripe_service.has_active_subscription(license_number)
+
+    return {
+        "license_number": license_number,
+        "cpa_name": cpa.full_name,
+        "uploads_used": existing_free_uploads,
+        "uploads_remaining": remaining_uploads,
+        "max_free_uploads": MAX_FREE_UPLOADS,
+        "at_limit": existing_free_uploads >= MAX_FREE_UPLOADS,
+        "has_premium_subscription": has_subscription,
+        "status": (
+            "premium"
+            if has_subscription
+            else ("available" if remaining_uploads > 0 else "limit_reached")
+        ),
+        "upgrade_required": existing_free_uploads >= MAX_FREE_UPLOADS
+        and not has_subscription,
+        "message": (
+            f"✅ {remaining_uploads} uploads remaining with full functionality"
+            if remaining_uploads > 0
+            else "🎯 Time to upgrade! You've used all 10 free uploads."
+        ),
+    }
