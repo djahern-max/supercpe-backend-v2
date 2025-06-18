@@ -56,31 +56,3 @@ class Payment(Base):
 
     def __repr__(self):
         return f"<Payment(license={self.cpa_license_number}, amount=${self.amount}, type={self.payment_type})>"
-
-
-class CPASubscription(Base):
-    __tablename__ = "cpa_subscriptions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    cpa_license_number = Column(String(20), nullable=False, index=True)
-
-    # Subscription details
-    subscription_type = Column(
-        String(50), nullable=False
-    )  # "basic", "premium", "enterprise"
-    is_active = Column(Boolean, default=True)
-
-    # Features enabled
-    document_uploads_allowed = Column(Boolean, default=False)
-    ai_parsing_enabled = Column(Boolean, default=False)
-    advanced_reports = Column(Boolean, default=False)
-    api_access = Column(Boolean, default=False)
-
-    # Dates
-    starts_at = Column(DateTime(timezone=True), nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    def __repr__(self):
-        return f"<CPASubscription(license={self.cpa_license_number}, type={self.subscription_type})>"

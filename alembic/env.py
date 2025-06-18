@@ -11,7 +11,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 # Import our models and database configuration
 from app.core.config import settings
 from app.core.database import Base
-from app.models import CPA, ComplianceRequirement
+
+# Import all models to ensure they're detected by Alembic
+from app.models.cpa import CPA
+from app.models.compliance import ComplianceRequirement
+from app.models.payment import Payment
+from app.models.cpe_record import CPERecord, CPEUploadSession
+from app.models.user import User, Subscription  # Add this line to import the User model
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -31,8 +37,10 @@ target_metadata = Base.metadata
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
 
+
 def get_url():
     return settings.database_url
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
@@ -74,9 +82,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()

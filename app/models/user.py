@@ -1,4 +1,4 @@
-# Updated app/models/user.py or app/models/payment.py
+# app/models/user.py
 from sqlalchemy import (
     Column,
     Integer,
@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Text,
     JSON,
+    Float,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -40,7 +41,9 @@ class User(Base):
     )  # URL to profile picture (useful for Google profiles)
 
     # Additional user data
-    metadata = Column(JSON, nullable=True)  # Flexible field for additional data
+    user_metadata = Column(
+        JSON, nullable=True
+    )  # Renamed from 'metadata' to avoid SQLAlchemy reserved name
 
     # Account status
     is_verified = Column(Boolean, default=False)
@@ -56,3 +59,40 @@ class User(Base):
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', auth_provider='{self.auth_provider}')>"
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    license_number = Column(String, index=True)
+
+    # Stripe subscription data
+    stripe_customer_id = Column(String, index=True)
+    stripe_subscription_id = Column(String, unique=True, index=True)
+    stripe_price_id = Column(String)
+
+    # Subscription details
+    plan_type = Column(String)  # "monthly", "annual"
+    amount = Column(Float)  # Amount in USD
+    status = Column(String)  # "active", "past_due", "canceled", "unpaid", etc.
+    current_period_start = Column(DateTime(timezone=True))
+    current_period_end = Column(DateTime(timezone=True))
+    cancel_at = Column(DateTime(timezone=True), nullable=True)
+    canceled_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Additional subscription data
+    subscription_metadata = Column(
+        JSON, nullable=True
+    )  # Also renamed to avoid potential issues
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="subscriptions")
+
+    def __repr__(self):
+        return f"<Subscription(id={self.id}, user_id={self.user_id}, status='{self.status}')>"
