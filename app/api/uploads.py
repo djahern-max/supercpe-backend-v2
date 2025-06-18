@@ -219,6 +219,7 @@ async def get_compliance_dashboard_free(
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
 
+    # FIXED: Return data in the EXACT format your dashboard expects
     return {
         "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
         "summary": {
@@ -235,18 +236,22 @@ async def get_compliance_dashboard_free(
             "max_free_uploads": MAX_FREE_UPLOADS,
             "at_limit": free_uploads >= MAX_FREE_UPLOADS,
         },
-        "upload_status": {  # For compatibility with your frontend
+        # CRITICAL: This is what your dashboard.js expects
+        "upload_status": {
             "free_uploads_used": free_uploads,
             "free_uploads_remaining": max(0, MAX_FREE_UPLOADS - free_uploads),
             "premium_uploads": premium_uploads,
             "has_subscription": has_subscription,
         },
-        "compliance_summary": {  # For compatibility with your frontend
-            "total_cpe_hours": total_cpe,
-            "total_ethics_hours": total_ethics,
+        # CRITICAL: This is what your compliance calculations expect
+        "compliance_summary": {
+            "total_cpe_hours": total_cpe,  # Your dashboard looks for this exact field
+            "total_ethics_hours": total_ethics,  # Your dashboard looks for this exact field
             "total_certificates": len(cpe_records),
+            "progress_percentage": min(100, (total_cpe / 120) * 100),
         },
-        "certificates": [  # For compatibility with your frontend
+        # CRITICAL: This is what your certificate table expects
+        "certificates": [
             {
                 "id": record.id,
                 "cpe_credits": record.cpe_credits,
@@ -269,6 +274,9 @@ async def get_compliance_dashboard_free(
             }
             for record in cpe_records
         ],
+        # Additional compatibility fields
+        "no_account_required": free_uploads > 0,
+        "upgrade_available": free_uploads >= MAX_FREE_UPLOADS,
     }
 
 
