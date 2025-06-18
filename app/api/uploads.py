@@ -1,6 +1,14 @@
 # app/api/uploads.py - CLEANED AND FIXED VERSION
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import (
+    APIRouter,
+    Depends,
+    UploadFile,
+    File,
+    HTTPException,
+    BackgroundTasks,
+    Query,
+)
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.services.cpa_import import CPAImportService
@@ -13,6 +21,7 @@ import os
 from datetime import datetime
 import logging
 import json
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/upload", tags=["Upload"])
@@ -1004,3 +1013,64 @@ async def get_free_tier_status(license_number: str, db: Session = Depends(get_db
             else "🎯 Time to upgrade! You've used all 10 free uploads."
         ),
     }
+
+
+@router.get("/certificate/{record_id}/view")
+async def get_certificate_view_url(
+    record_id: int,
+    license_number: str = Query(..., description="CPA license number"),
+    db: Session = Depends(get_db),
+):
+    """Generate a temporary download URL for viewing a certificate"""
+
+    try:
+        # Find the certificate record
+        certificate = (
+            db.query(CPERecord)
+            .filter(
+                CPERecord.id == record_id,
+                CPERecord.cpa_license_number == license_number,
+            )
+            .first()
+        )
+
+        if not certificate:
+            raise HTTPException(
+                status_code=404, detail="Certificate not found or access denied"
+            )
+
+        # Check if the file exists in storage
+        if not certificate.file_path:
+            raise HTTPException(
+                status_code=404, detail="Certificate file not found in storage"
+            )
+
+        # Generate presigned URL for viewing (valid for 1 hour)
+        storage_service = DocumentStorageService()
+        download_url = storage_service.generate_download_url(
+            certificate.file_path, expiration=3600  # 1 hour
+        )
+
+        if not download_url:
+            raise HTTPException(
+                status_code=500, detail="Failed to generate download URL"
+            )
+
+        return {
+            "success": True,
+            "download_url": download_url,
+            "certificate_id": record_id,
+            "original_filename": certificate.original_filename,
+            "expires_in": 3600,
+            "content_type": (
+                "application/pdf"
+                if certificate.file_path.endswith(".pdf")
+                else "image/*"
+            ),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating certificate view URL: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate view URL")
