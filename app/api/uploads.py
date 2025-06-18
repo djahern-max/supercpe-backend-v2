@@ -82,7 +82,7 @@ async def upload_cpe_certificate_premium(
                     "Instant professional reports",
                     "Streamlined renewal preparation",
                 ],
-                "pricing": "$58/year - Complete professional management suite",
+                "pricing": "$10/month - Complete professional management suite",
                 "upgrade_url": "/api/payments/create-subscription",
             },
         )
@@ -269,7 +269,7 @@ async def save_reviewed_certificate(
                     "Generate reports with accurate information",
                 ],
                 "user_data_note": "Your corrections are ready to save - upgrade to preserve them",
-                "pricing": "$58/year - Complete professional management suite",
+                "pricing": "$10/month - Complete professional management suite",
             },
         )
 
@@ -439,9 +439,9 @@ async def analyze_certificate_preview(
                 ],
                 "social_proof": "Trusted by over 500 practicing CPAs for professional record management",
                 "pricing": {
-                    "annual": "$58/year",
-                    "monthly": "$6.99/month",
-                    "value": "Professional document management for $4.83 per month",
+                    "annual": "$120/year",
+                    "monthly": "$8/month",
+                    "value": "Professional document management for $8.00 per month",
                 },
                 "efficiency_focus": "Save time and stay organized with centralized CPE management",
                 "cta": "Upgrade to Professional Management",
@@ -505,7 +505,7 @@ async def upload_certificate_free_tier(
                 },
                 "upgrade_flow": {
                     "step_1": "Create account with email (required for billing)",
-                    "step_2": "Choose Professional plan ($58/year)",
+                    "step_2": "Choose Professional plan ($96/year)",
                     "step_3": "All your free uploads will be preserved",
                     "benefit": "Continue with unlimited uploads + premium features",
                 },
@@ -516,7 +516,7 @@ async def upload_certificate_free_tier(
                     "📋 Professional audit presentation tools",
                 ],
                 "upgrade_url": f"/upgrade?license={license_number}",
-                "pricing": "$58/year - Complete professional management suite",
+                "pricing": "$96/year - Complete professional management suite",
             },
         )
 
