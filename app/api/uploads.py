@@ -219,71 +219,58 @@ async def get_compliance_dashboard_free(
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
 
-    # FIXED: Return data in the EXACT format your dashboard expects
-    return {
-        "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
-        "summary": {
-            "total_records": len(cpe_records),
-            "total_cpe_credits": total_cpe,
-            "total_ethics_credits": total_ethics,
-            "free_uploads_used": free_uploads,
-            "premium_uploads": premium_uploads,
-            "subscription_status": "active" if has_subscription else "free",
-        },
-        "free_tier_status": {
-            "uploads_used": free_uploads,
-            "uploads_remaining": max(0, MAX_FREE_UPLOADS - free_uploads),
-            "max_free_uploads": MAX_FREE_UPLOADS,
-            "at_limit": free_uploads >= MAX_FREE_UPLOADS,
-        },
-        # CRITICAL: This is what your dashboard.js expects
-        "upload_status": {
-            "free_uploads_used": free_uploads,
-            "free_uploads_remaining": max(0, MAX_FREE_UPLOADS - free_uploads),
-            "premium_uploads": premium_uploads,
-            "has_subscription": has_subscription,
-        },
-        # CRITICAL: This is what your compliance calculations expect
-        "compliance_summary": {
-            "total_cpe_hours": total_cpe,  # Your dashboard looks for this exact field
-            "total_ethics_hours": total_ethics,  # Your dashboard looks for this exact field
-            "total_certificates": len(cpe_records),
-            "progress_percentage": min(100, (total_cpe / 120) * 100),
-        },
-        # CRITICAL: This is what your certificate table expects
-        "certificates": [
+    # Transform CPE records to match frontend expectations
+    certificates = []
+    for record in cpe_records:
+        certificates.append(
             {
                 "id": record.id,
-                "cpe_credits": record.cpe_credits,
-                "ethics_credits": record.ethics_credits,
-                "course_title": record.course_title,
-                "provider": record.provider,
+                "course_title": record.course_title or "Untitled Course",
+                "provider": record.provider or "Unknown Provider",
                 "completion_date": (
                     record.completion_date.isoformat()
                     if record.completion_date
                     else None
                 ),
-                "certificate_number": record.certificate_number,
-                "confidence_score": record.confidence_score,
-                "is_verified": record.is_verified,
-                "original_filename": record.original_filename,
+                "cpe_credits": float(record.cpe_credits),
+                "ethics_credits": float(record.ethics_credits),
+                "certificate_number": record.certificate_number or "",
+                "confidence": record.confidence_score or 0.0,
                 "storage_tier": record.storage_tier,
-                "created_at": (
-                    record.created_at.isoformat() if record.created_at else None
-                ),
+                "is_verified": record.is_verified or False,
             }
-            for record in cpe_records
-        ],
-        # Additional compatibility fields
-        "no_account_required": free_uploads > 0,
-        "upgrade_available": free_uploads >= MAX_FREE_UPLOADS,
+        )
+
+    # FIXED: Return data in the EXACT format ProfessionalCPEDashboard expects
+    return {
+        "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
+        # THIS IS THE KEY FIX - Dashboard expects "compliance_summary" not "summary"
+        "compliance_summary": {
+            # Dashboard expects "total_cpe_hours" not "total_cpe_credits"
+            "total_cpe_hours": total_cpe,
+            "total_ethics_hours": total_ethics,
+            "total_certificates": len(cpe_records),
+        },
+        # Also keep the certificates data that the dashboard needs
+        "certificates": certificates,
+        # Upload status for freemium functionality
+        "upload_status": {
+            "free_uploads_used": free_uploads,
+            "free_uploads_remaining": max(0, MAX_FREE_UPLOADS - free_uploads),
+            "max_free_uploads": MAX_FREE_UPLOADS,
+            "at_limit": free_uploads >= MAX_FREE_UPLOADS,
+            "has_subscription": has_subscription,
+        },
+        # Additional metadata
+        "summary": {
+            "total_records": len(cpe_records),
+            "total_cpe_credits": total_cpe,  # Keep this for backward compatibility
+            "total_ethics_credits": total_ethics,
+            "free_uploads_used": free_uploads,
+            "premium_uploads": premium_uploads,
+            "subscription_status": "active" if has_subscription else "free",
+        },
     }
-
-
-# ===== UPLOAD ENDPOINTS =====
-
-
-# Replace your upload_certificate_free_tier function with this FIXED version:
 
 
 @router.post("/upload-certificate-free/{license_number}")
