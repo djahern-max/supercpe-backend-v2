@@ -456,16 +456,7 @@ async def analyze_certificate_preview(
         os.unlink(temp_file_path)
 
 
-# Keep the old endpoint name for backwards compatibility but redirect to new strategy
-@router.post("/test-ai-parsing/{license_number}")
-async def test_ai_parsing_redirect(
-    license_number: str, file: UploadFile = File(...), db: Session = Depends(get_db)
-):
-    """DEPRECATED: Use /analyze-certificate/ instead"""
-    return await analyze_certificate_preview(license_number, file, db)
-
-
-# Add these endpoints to the END of your existing app/api/uploads.py file
+# Replace the upload_certificate_free_tier function in app/api/uploads.py with this:
 
 
 @router.post("/upload-certificate-free/{license_number}")
@@ -525,22 +516,49 @@ async def upload_certificate_free_tier(
             },
         )
 
-    # FULL FUNCTIONALITY: Upload and parse document with PERMANENT storage
-    storage_service = DocumentStorageService()
-
     try:
-        # Upload to Digital Ocean Spaces AND parse with AI
-        result = await storage_service.upload_and_parse_certificate(
-            file, license_number, parse_with_ai
+        # Step 1: Upload to Digital Ocean Spaces
+        storage_service = DocumentStorageService()
+        upload_result = await storage_service.upload_cpe_certificate(
+            file, license_number
         )
 
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
+        if not upload_result["success"]:
+            raise HTTPException(status_code=500, detail=upload_result["error"])
 
-        # Extract parsed data
-        parsed_data = result.get("parsing_result", {}).get("parsed_data", {})
+        # Step 2: Parse with AI (if enabled)
+        parsing_result = None
+        if parse_with_ai:
+            from app.services.vision_service import CPEParsingService
+            import tempfile
 
-        # Parse completion date
+            vision_service = CPEParsingService()
+            file_extension = os.path.splitext(file.filename)[1].lower()
+
+            # Save file temporarily for AI analysis
+            with tempfile.NamedTemporaryFile(
+                suffix=file_extension, delete=False
+            ) as temp_file:
+                await file.seek(0)  # Reset file pointer
+                content = await file.read()
+                temp_file.write(content)
+                temp_file_path = temp_file.name
+
+            try:
+                # Parse with AI
+                parsing_result = await vision_service.parse_document(
+                    temp_file_path, file_extension
+                )
+            finally:
+                # Clean up temp file
+                os.unlink(temp_file_path)
+
+        # Step 3: Extract parsed data
+        parsed_data = {}
+        if parsing_result and parsing_result.get("success"):
+            parsed_data = parsing_result.get("parsed_data", {})
+
+        # Step 4: Parse completion date
         completion_date_str = parsed_data.get("completion_date", {}).get("value", "")
         parsed_completion_date = None
         if completion_date_str:
@@ -556,13 +574,13 @@ async def upload_certificate_free_tier(
                 except ValueError:
                     parsed_completion_date = datetime.utcnow().date()
 
-        # Create CPE record using YOUR existing model structure
+        # Step 5: Create CPE record with FULL functionality
         cpe_record = CPERecord(
             # Using your existing model fields
             cpa_license_number=license_number,
-            document_filename=result.get("filename", ""),
+            document_filename=upload_result.get("filename", ""),
             original_filename=file.filename,
-            # CPE details (matching your model)
+            # CPE details from AI parsing
             cpe_credits=float(parsed_data.get("cpe_hours", {}).get("value", 0.0)),
             ethics_credits=float(parsed_data.get("ethics_hours", {}).get("value", 0.0)),
             course_title=parsed_data.get("course_title", {}).get(
@@ -573,15 +591,15 @@ async def upload_certificate_free_tier(
             certificate_number=parsed_data.get("certificate_number", {}).get(
                 "value", ""
             ),
-            # Parsing metadata (matching your model)
-            confidence_score=result.get("parsing_result", {}).get(
-                "confidence_score", 0.0
+            # Parsing metadata
+            confidence_score=(
+                parsing_result.get("confidence_score", 0.0) if parsing_result else 0.0
             ),
-            parsing_method="google_vision",
-            raw_text=result.get("parsing_result", {}).get("raw_text", ""),
+            parsing_method="google_vision" if parse_with_ai else "manual",
+            raw_text=parsing_result.get("raw_text", "") if parsing_result else "",
             # FREE TIER STORAGE
             storage_tier="free",
-            # Verification status (your model fields)
+            # Verification status
             is_verified=False,
         )
 
@@ -596,11 +614,11 @@ async def upload_certificate_free_tier(
             "message": "🎉 Certificate uploaded successfully with FULL functionality!",
             "filename": file.filename,
             "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
-            "parsing_result": result.get("parsing_result"),
+            "parsing_result": parsing_result,
             "storage_info": {
                 "uploaded_to_digital_ocean": True,
                 "permanent_storage": True,
-                "secure_url": result.get("file_url"),
+                "secure_url": upload_result.get("file_url"),
                 "storage_tier": "free",
                 "no_account_required": True,
             },
