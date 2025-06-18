@@ -1,9 +1,11 @@
+# app/services/stripe_service.py - Enhanced with subscription management
 import stripe
+from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.payment import Payment
-from sqlalchemy.orm import Session
+from app.models.user import User, Subscription
+from app.models.cpa import CPA
 from datetime import datetime, timedelta
-import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,7 +14,447 @@ logger = logging.getLogger(__name__)
 class StripeService:
     def __init__(self, db: Session):
         self.db = db
-        # Set API key per instance, not globally
+        stripe.api_key = settings.stripe_secret_key
+
+    def create_checkout_session(
+        self,
+        customer_email: str,
+        license_number: str,
+        price_id: str = None,
+        product_name: str = "SuperCPE Professional",
+        unit_amount: int = 1000,  # $10 in cents
+        recurring: dict = {"interval": "month"},
+        success_url: str = None,
+        cancel_url: str = None,
+        metadata: dict = None,
+    ):
+        """Create a Stripe checkout session for subscription"""
+        try:
+            # Create or retrieve customer
+            customer = self._get_or_create_customer(customer_email, license_number)
+
+            # Prepare line items
+            if price_id:
+                # Use existing Stripe price
+                line_items = [
+                    {
+                        "price": price_id,
+                        "quantity": 1,
+                    }
+                ]
+            else:
+                # Create price on the fly
+                line_items = [
+                    {
+                        "price_data": {
+                            "currency": "usd",
+                            "product_data": {
+                                "name": product_name,
+                                "description": f"Professional CPE management for NH CPA #{license_number}",
+                            },
+                            "unit_amount": unit_amount,
+                            "recurring": recurring,
+                        },
+                        "quantity": 1,
+                    }
+                ]
+
+            # Create checkout session
+            checkout_session = stripe.checkout.Session.create(
+                customer=customer.id,
+                payment_method_types=["card"],
+                line_items=line_items,
+                mode="subscription",
+                success_url=success_url
+                or f"{settings.frontend_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url=cancel_url
+                or f"{settings.frontend_url}/dashboard/{license_number}?payment_cancelled=true",
+                metadata={
+                    "license_number": license_number,
+                    "product_type": "cpe_management",
+                    "created_by": "supercpe_backend",
+                    **(metadata or {}),
+                },
+                subscription_data={
+                    "metadata": {
+                        "license_number": license_number,
+                        "product_type": "cpe_management",
+                    }
+                },
+                # Allow promotion codes for discounts
+                allow_promotion_codes=True,
+                # Automatically collect tax if applicable
+                automatic_tax={"enabled": True},
+            )
+
+            return checkout_session
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe error creating checkout session: {e}")
+            raise Exception(f"Payment system error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error creating checkout session: {e}")
+            raise Exception(f"Failed to create payment session: {str(e)}")
+
+    def _get_or_create_customer(self, email: str, license_number: str):
+        """Get existing Stripe customer or create new one"""
+        try:
+            # Search for existing customer by email
+            customers = stripe.Customer.list(email=email, limit=1)
+
+            if customers.data:
+                customer = customers.data[0]
+
+                # Update metadata if needed
+                if customer.metadata.get("license_number") != license_number:
+                    customer = stripe.Customer.modify(
+                        customer.id,
+                        metadata={
+                            **customer.metadata,
+                            "license_number": license_number,
+                        },
+                    )
+            else:
+                # Create new customer
+                customer = stripe.Customer.create(
+                    email=email,
+                    metadata={
+                        "license_number": license_number,
+                        "source": "supercpe_backend",
+                        "created_at": datetime.now().isoformat(),
+                    },
+                )
+
+            return customer
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe error with customer: {e}")
+            raise Exception(f"Customer creation error: {str(e)}")
+
+    def has_active_subscription(self, license_number: str) -> bool:
+        """Check if CPA has active subscription"""
+        try:
+            # First check local database
+            subscription = (
+                self.db.query(Subscription)
+                .filter(
+                    Subscription.cpa_license_number == license_number,
+                    Subscription.status == "active",
+                    Subscription.current_period_end > datetime.now(),
+                )
+                .first()
+            )
+
+            if subscription:
+                # Verify with Stripe to ensure it's still active
+                try:
+                    stripe_subscription = stripe.Subscription.retrieve(
+                        subscription.stripe_subscription_id
+                    )
+
+                    if stripe_subscription.status in ["active", "trialing"]:
+                        return True
+                    else:
+                        # Update local status if Stripe shows different
+                        subscription.status = stripe_subscription.status
+                        self.db.commit()
+                        return False
+
+                except stripe.error.StripeError:
+                    # If Stripe call fails, rely on local data for now
+                    return True
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Error checking subscription status: {e}")
+            return False
+
+    def get_subscription_status(self, license_number: str):
+        """Get detailed subscription status"""
+        try:
+            subscription = (
+                self.db.query(Subscription)
+                .filter(Subscription.cpa_license_number == license_number)
+                .first()
+            )
+
+            if not subscription:
+                return {
+                    "has_subscription": False,
+                    "status": "none",
+                    "message": "No subscription found",
+                }
+
+            # Get fresh data from Stripe
+            try:
+                stripe_subscription = stripe.Subscription.retrieve(
+                    subscription.stripe_subscription_id
+                )
+
+                # Update local record
+                subscription.status = stripe_subscription.status
+                subscription.current_period_start = datetime.fromtimestamp(
+                    stripe_subscription.current_period_start
+                )
+                subscription.current_period_end = datetime.fromtimestamp(
+                    stripe_subscription.current_period_end
+                )
+                self.db.commit()
+
+                return {
+                    "has_subscription": stripe_subscription.status
+                    in ["active", "trialing"],
+                    "status": stripe_subscription.status,
+                    "current_period_end": subscription.current_period_end.isoformat(),
+                    "current_period_start": subscription.current_period_start.isoformat(),
+                    "plan_name": self._get_plan_name_from_subscription(
+                        stripe_subscription
+                    ),
+                    "cancel_at_period_end": stripe_subscription.cancel_at_period_end,
+                    "next_payment_date": (
+                        subscription.current_period_end.isoformat()
+                        if not stripe_subscription.cancel_at_period_end
+                        else None
+                    ),
+                }
+
+            except stripe.error.StripeError as e:
+                logger.error(f"Error fetching Stripe subscription: {e}")
+                # Return local data as fallback
+                return {
+                    "has_subscription": subscription.status == "active",
+                    "status": subscription.status,
+                    "current_period_end": subscription.current_period_end.isoformat(),
+                    "message": "Using cached subscription data",
+                }
+
+        except Exception as e:
+            logger.error(f"Error getting subscription status: {e}")
+            return {
+                "has_subscription": False,
+                "status": "error",
+                "message": "Error checking subscription status",
+            }
+
+    def _get_plan_name_from_subscription(self, stripe_subscription):
+        """Extract plan name from Stripe subscription"""
+        try:
+            if stripe_subscription.items.data:
+                price = stripe_subscription.items.data[0].price
+                if price.recurring.interval == "year":
+                    return "Professional Annual"
+                elif price.recurring.interval == "month":
+                    return "Professional Monthly"
+            return "Professional Plan"
+        except:
+            return "Professional Plan"
+
+    def handle_successful_payment(self, checkout_session_id: str):
+        """Handle successful payment from Stripe webhook"""
+        try:
+            # Retrieve the checkout session
+            session = stripe.checkout.Session.retrieve(checkout_session_id)
+
+            # Get the subscription
+            subscription_id = session.subscription
+            if not subscription_id:
+                raise Exception("No subscription found in checkout session")
+
+            stripe_subscription = stripe.Subscription.retrieve(subscription_id)
+
+            # Extract metadata
+            license_number = session.metadata.get("license_number")
+            if not license_number:
+                raise Exception("No license number in session metadata")
+
+            # Get or create user
+            user = (
+                self.db.query(User)
+                .filter(User.license_number == license_number)
+                .first()
+            )
+            if not user:
+                # Create user if doesn't exist
+                cpa = (
+                    self.db.query(CPA)
+                    .filter(CPA.license_number == license_number)
+                    .first()
+                )
+                if not cpa:
+                    raise Exception(f"CPA not found for license {license_number}")
+
+                user = User(
+                    email=session.customer_details.email,
+                    name=cpa.full_name,
+                    license_number=license_number,
+                    auth_provider="stripe",
+                    is_verified=True,
+                    created_at=datetime.now(),
+                )
+                self.db.add(user)
+                self.db.flush()
+
+            # Create or update subscription record
+            existing_subscription = (
+                self.db.query(Subscription)
+                .filter(Subscription.cpa_license_number == license_number)
+                .first()
+            )
+
+            if existing_subscription:
+                # Update existing subscription
+                existing_subscription.stripe_subscription_id = subscription_id
+                existing_subscription.status = stripe_subscription.status
+                existing_subscription.current_period_start = datetime.fromtimestamp(
+                    stripe_subscription.current_period_start
+                )
+                existing_subscription.current_period_end = datetime.fromtimestamp(
+                    stripe_subscription.current_period_end
+                )
+                existing_subscription.updated_at = datetime.now()
+            else:
+                # Create new subscription
+                new_subscription = Subscription(
+                    user_id=user.id,
+                    cpa_license_number=license_number,
+                    stripe_subscription_id=subscription_id,
+                    stripe_customer_id=session.customer,
+                    status=stripe_subscription.status,
+                    current_period_start=datetime.fromtimestamp(
+                        stripe_subscription.current_period_start
+                    ),
+                    current_period_end=datetime.fromtimestamp(
+                        stripe_subscription.current_period_end
+                    ),
+                    created_at=datetime.now(),
+                    updated_at=datetime.now(),
+                )
+                self.db.add(new_subscription)
+
+            # Create payment record
+            payment = Payment(
+                user_id=user.id,
+                cpa_license_number=license_number,
+                stripe_payment_intent_id=session.payment_intent,
+                stripe_subscription_id=subscription_id,
+                amount=session.amount_total / 100,  # Convert from cents
+                currency=session.currency,
+                status="completed",
+                payment_type="subscription",
+                product_type="cpe_management",
+                created_at=datetime.now(),
+            )
+            self.db.add(payment)
+
+            # Mark CPA as premium
+            cpa = (
+                self.db.query(CPA).filter(CPA.license_number == license_number).first()
+            )
+            if cpa:
+                cpa.is_premium = True
+
+            self.db.commit()
+
+            logger.info(
+                f"Successfully processed subscription for license {license_number}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling successful payment: {e}")
+            self.db.rollback()
+            raise e
+
+    def cancel_subscription(self, license_number: str):
+        """Cancel subscription (at period end)"""
+        try:
+            subscription = (
+                self.db.query(Subscription)
+                .filter(
+                    Subscription.cpa_license_number == license_number,
+                    Subscription.status == "active",
+                )
+                .first()
+            )
+
+            if not subscription:
+                raise Exception("No active subscription found")
+
+            # Cancel at period end in Stripe
+            stripe.Subscription.modify(
+                subscription.stripe_subscription_id, cancel_at_period_end=True
+            )
+
+            logger.info(
+                f"Subscription cancelled at period end for license {license_number}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Error cancelling subscription: {e}")
+            raise e
+
+    def reactivate_subscription(self, license_number: str):
+        """Reactivate a cancelled subscription"""
+        try:
+            subscription = (
+                self.db.query(Subscription)
+                .filter(Subscription.cpa_license_number == license_number)
+                .first()
+            )
+
+            if not subscription:
+                raise Exception("No subscription found")
+
+            # Reactivate in Stripe
+            stripe.Subscription.modify(
+                subscription.stripe_subscription_id, cancel_at_period_end=False
+            )
+
+            logger.info(f"Subscription reactivated for license {license_number}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error reactivating subscription: {e}")
+            raise e
+
+    def get_pricing_plans(self):
+        """Get available pricing plans"""
+        return {
+            "monthly": {
+                "name": "Professional Monthly",
+                "price": "$10",
+                "period": "month",
+                "description": "Perfect for ongoing CPE management",
+                "features": [
+                    "Unlimited certificate uploads",
+                    "Advanced compliance reports",
+                    "Priority AI processing",
+                    "Secure document vault",
+                    "Professional audit presentations",
+                    "Multi-year tracking",
+                    "Email support",
+                ],
+            },
+            "annual": {
+                "name": "Professional Annual",
+                "price": "$96",
+                "period": "year",
+                "monthly_equivalent": "$8/month",
+                "savings": "Save $24/year (20% off)",
+                "description": "Best value - 2 months free!",
+                "popular": True,
+                "features": [
+                    "Everything in Monthly plan",
+                    "2 months FREE (20% savings)",
+                    "Priority customer support",
+                    "Advanced compliance analytics",
+                    "Custom report templates",
+                    "Early access to new features",
+                ],
+            },
+        }
 
     def create_payment_intent(
         self,
@@ -20,11 +462,18 @@ class StripeService:
         amount: float,
         product_type: str,
         payment_type: str = "one_time",
-        metadata: dict = None,
-    ) -> dict:
-        """Create a Stripe Payment Intent"""
+    ):
+        """Create payment intent for one-time payments"""
         try:
-            stripe.api_key = settings.stripe_secret_key
+            # Verify CPA exists
+            cpa = (
+                self.db.query(CPA)
+                .filter(CPA.license_number == cpa_license_number)
+                .first()
+            )
+            if not cpa:
+                return {"success": False, "error": "CPA not found"}
+
             # Create payment intent
             intent = stripe.PaymentIntent.create(
                 amount=int(amount * 100),  # Convert to cents
@@ -33,224 +482,41 @@ class StripeService:
                     "cpa_license_number": cpa_license_number,
                     "product_type": product_type,
                     "payment_type": payment_type,
-                    **(metadata or {}),
                 },
             )
-
-            # Save to database
-            payment = Payment(
-                cpa_license_number=cpa_license_number,
-                stripe_payment_intent_id=intent.id,
-                amount=amount,
-                payment_type=payment_type,
-                product_type=product_type,
-                status="pending",
-                payment_metadata=json.dumps(metadata) if metadata else None,
-            )
-            self.db.add(payment)
-            self.db.commit()
 
             return {
                 "success": True,
                 "client_secret": intent.client_secret,
                 "payment_intent_id": intent.id,
-                "amount": amount,
             }
 
         except stripe.error.StripeError as e:
-            logger.error(f"Stripe error: {e}")
+            logger.error(f"Stripe error creating payment intent: {e}")
+            return {"success": False, "error": str(e)}
+        except Exception as e:
+            logger.error(f"Error creating payment intent: {e}")
             return {"success": False, "error": str(e)}
 
-    def create_subscription(
-        self, cpa_license_number: str, price_id: str, subscription_type: str = "premium"
-    ) -> dict:
-        """Create a Stripe Subscription"""
+    def check_payment_status(self, payment_intent_id: str):
+        """Check and update payment status"""
         try:
-            stripe.api_key = settings.stripe_secret_key
-            # Create customer
-            customer = stripe.Customer.create(
-                metadata={"cpa_license_number": cpa_license_number}
-            )
-
-            # Create subscription
-            subscription = stripe.Subscription.create(
-                customer=customer.id,
-                items=[{"price": price_id}],
-                metadata={
-                    "cpa_license_number": cpa_license_number,
-                    "subscription_type": subscription_type,
-                },
-            )
-
-            return {
-                "success": True,
-                "subscription_id": subscription.id,
-                "customer_id": customer.id,
-                "status": subscription.status,
-            }
-
-        except stripe.error.StripeError as e:
-            logger.error(f"Stripe subscription error: {e}")
-            return {"success": False, "error": str(e)}
-
-    def check_payment_status(self, payment_intent_id: str) -> dict:
-        """Check payment status"""
-        try:
-            stripe.api_key = settings.stripe_secret_key
             intent = stripe.PaymentIntent.retrieve(payment_intent_id)
 
-            # Update database
-            payment = (
-                self.db.query(Payment)
-                .filter(Payment.stripe_payment_intent_id == payment_intent_id)
-                .first()
-            )
+            if intent.status == "succeeded":
+                # Update payment record in database
+                payment = (
+                    self.db.query(Payment)
+                    .filter(Payment.stripe_payment_intent_id == payment_intent_id)
+                    .first()
+                )
 
-            if payment:
-                payment.status = intent.status
-                if intent.status == "succeeded":
-                    payment.payment_date = datetime.now()
-                    payment.is_active = True
+                if payment:
+                    payment.status = "completed"
+                    self.db.commit()
 
-                    # Activate subscription if needed
-                    self._activate_cpa_subscription(payment)
+            return intent.status
 
-                self.db.commit()
-
-            return {"success": True, "status": intent.status, "payment": payment}
-
-        except stripe.error.StripeError as e:
-            return {"success": False, "error": str(e)}
-
-    def _activate_cpa_subscription(self, payment: Payment):
-        """Activate CPA subscription based on payment"""
-        if payment.payment_type == "license_annual":
-            # Create/update annual subscription
-            subscription = Subscription(
-                cpa_license_number=payment.cpa_license_number,
-                subscription_type="premium",
-                document_uploads_allowed=True,
-                ai_parsing_enabled=True,
-                advanced_reports=True,
-                starts_at=datetime.now(),
-                expires_at=datetime.now() + timedelta(days=365),
-            )
-            self.db.add(subscription)
-
-    def has_active_subscription(self, cpa_license_number: str) -> bool:
-        """Check if CPA has active subscription"""
-        subscription = (
-            self.db.query(Subscription)
-            .filter(
-                Subscription.cpa_license_number == cpa_license_number,
-                Subscription.is_active == True,
-                Subscription.expires_at > datetime.now(),
-            )
-            .first()
-        )
-
-        return subscription is not None
-
-    def get_pricing_plans(self) -> dict:
-        """Get available pricing plans"""
-        return {
-            "free": {
-                "name": "Free",
-                "price": 0,
-                "features": [
-                    "Compliance status lookup",
-                    "Basic compliance tracking",
-                    "License verification",
-                ],
-            },
-            "premium_annual": {
-                "name": "Premium Annual",
-                "price": 29.00,
-                "features": [
-                    "Document upload & storage",
-                    "AI-powered CPE parsing",
-                    "Advanced compliance reports",
-                    "Email reminders",
-                    "Export capabilities",
-                ],
-            },
-            "pay_per_upload": {
-                "name": "Pay Per Upload",
-                "price": 2.99,
-                "features": [
-                    "Single document upload",
-                    "AI parsing for that document",
-                    "Updated compliance status",
-                ],
-            },
-        }
-
-    def create_checkout_session(
-        self,
-        customer_email,
-        license_number,
-        price_id=None,
-        product_name=None,
-        unit_amount=None,
-        recurring=None,
-        success_url=None,
-        cancel_url=None,
-        metadata=None,
-    ):
-        """Create a Stripe checkout session for subscription"""
-
-        stripe.api_key = self.stripe_secret_key
-
-        # Default URLs if not provided
-        if not success_url:
-            success_url = f"{settings.FRONTEND_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}"
-        if not cancel_url:
-            cancel_url = f"{settings.FRONTEND_URL}/dashboard/{license_number}?payment_cancelled=true"
-
-        # Default metadata
-        if metadata is None:
-            metadata = {"license_number": license_number}
-
-        # Create session with price ID if provided
-        if price_id:
-            session = stripe.checkout.Session.create(
-                customer_email=customer_email,
-                payment_method_types=["card"],
-                line_items=[
-                    {
-                        "price": price_id,
-                        "quantity": 1,
-                    },
-                ],
-                mode="subscription",
-                success_url=success_url,
-                cancel_url=cancel_url,
-                metadata=metadata,
-            )
-        # Create session with product details if no price ID
-        elif product_name and unit_amount and recurring:
-            session = stripe.checkout.Session.create(
-                customer_email=customer_email,
-                payment_method_types=["card"],
-                line_items=[
-                    {
-                        "price_data": {
-                            "currency": "usd",
-                            "product_data": {
-                                "name": product_name,
-                            },
-                            "unit_amount": unit_amount,  # Amount in cents
-                            "recurring": recurring,
-                        },
-                        "quantity": 1,
-                    },
-                ],
-                mode="subscription",
-                success_url=success_url,
-                cancel_url=cancel_url,
-                metadata=metadata,
-            )
-        else:
-            raise ValueError("Either price_id or product details must be provided")
-
-        return session
+        except Exception as e:
+            logger.error(f"Error checking payment status: {e}")
+            return None
