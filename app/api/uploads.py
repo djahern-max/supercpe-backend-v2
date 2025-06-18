@@ -10,6 +10,10 @@ from app.models.payment import CPASubscription
 import tempfile
 import os
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/upload", tags=["Upload"])
 
@@ -713,4 +717,50 @@ async def get_compliance_dashboard_free(
         ],
         "no_account_required": free_uploads > 0,
         "upgrade_available": free_uploads >= 10,
+    }
+
+
+@router.delete("/certificate/{record_id}")
+async def delete_certificate(
+    record_id: int, license_number: str, db: Session = Depends(get_db)
+):
+    """Delete a CPE certificate record and its associated file from Digital Ocean Spaces"""
+
+    # 1. Find the CPE record
+    cpe_record = db.query(CPERecord).filter(CPERecord.id == record_id).first()
+
+    if not cpe_record:
+        raise HTTPException(status_code=404, detail="Certificate record not found")
+
+    # 2. Verify the license number matches (security check)
+    if cpe_record.cpa_license_number != license_number:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: License number does not match record owner",
+        )
+
+    # 3. Delete the file from Digital Ocean Spaces if it exists
+    try:
+        storage_service = DocumentStorageService()
+        if cpe_record.document_filename:
+            # Delete the file from DO Spaces
+            delete_result = storage_service.delete_file(cpe_record.document_filename)
+            if not delete_result.get("success"):
+                # Log the error but continue with database deletion
+                logger.error(
+                    f"Failed to delete file from storage: {delete_result.get('error')}"
+                )
+    except Exception as e:
+        # Log the error but continue with database deletion
+        logger.error(f"Error deleting file from storage: {str(e)}")
+
+    # 4. Delete the record from the database
+    db.delete(cpe_record)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Certificate deleted successfully",
+        "record_id": record_id,
+        "license_number": license_number,
     }

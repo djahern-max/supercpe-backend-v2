@@ -131,3 +131,38 @@ class DocumentStorageService:
         except ClientError as e:
             logger.error(f"Error generating download URL: {e}")
             return None
+
+    def delete_file(self, file_key: str) -> dict:
+        """Delete a file from Digital Ocean Spaces"""
+        try:
+            # Check if file exists
+            try:
+                self.client.head_object(Bucket=self.bucket, Key=file_key)
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "404":
+                    # File doesn't exist, but we'll consider this a successful deletion
+                    return {
+                        "success": True,
+                        "message": "File does not exist in storage",
+                        "file_key": file_key,
+                    }
+                else:
+                    # Some other error occurred
+                    raise
+
+            # Delete the file
+            self.client.delete_object(Bucket=self.bucket, Key=file_key)
+
+            logger.info(f"Successfully deleted file: {file_key}")
+            return {
+                "success": True,
+                "message": "File deleted successfully",
+                "file_key": file_key,
+            }
+        except Exception as e:
+            logger.error(f"Error deleting file {file_key}: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Failed to delete file: {str(e)}",
+                "file_key": file_key,
+            }
