@@ -43,7 +43,7 @@ async def login(data: Dict[str, Any] = Body(...), db: Session = Depends(get_db))
     # Optional: Verify CPA license still active
     if user.license_number:
         cpa = db.query(CPA).filter(CPA.license_number == user.license_number).first()
-        if not cpa or cpa.status != "ACTIVE":
+        if not cpa or cpa.status.upper() != "ACTIVE":
             raise HTTPException(status_code=403, detail="CPA license no longer active")
 
     # Update last login
