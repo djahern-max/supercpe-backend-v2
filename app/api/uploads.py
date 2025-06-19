@@ -21,6 +21,7 @@ import os
 from datetime import datetime
 import logging
 import json
+from fastapi.responses import RedirectResponse
 
 
 logger = logging.getLogger(__name__)
@@ -1015,62 +1016,99 @@ async def get_free_tier_status(license_number: str, db: Session = Depends(get_db
     }
 
 
-@router.get("/certificate/{record_id}/view")
-async def get_certificate_view_url(
-    record_id: int,
-    license_number: str = Query(..., description="CPA license number"),
-    db: Session = Depends(get_db),
+@router.get("/document/{record_id}")
+async def get_document(
+    record_id: int, license_number: str, db: Session = Depends(get_db)
 ):
-    """Generate a temporary download URL for viewing a certificate"""
+    """Get a presigned URL to view/download a certificate document"""
 
-    try:
-        # Find the certificate record
-        certificate = (
-            db.query(CPERecord)
-            .filter(
-                CPERecord.id == record_id,
-                CPERecord.cpa_license_number == license_number,
-            )
-            .first()
+    # Find the CPE record
+    cpe_record = db.query(CPERecord).filter(CPERecord.id == record_id).first()
+    if not cpe_record:
+        raise HTTPException(status_code=404, detail="Certificate record not found")
+
+    # Verify the license number matches (security check)
+    if cpe_record.cpa_license_number != license_number:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: License number does not match record owner",
         )
 
-        if not certificate:
-            raise HTTPException(
-                status_code=404, detail="Certificate not found or access denied"
-            )
+    # Check if document exists
+    if not cpe_record.document_filename:
+        raise HTTPException(
+            status_code=404, detail="No document file associated with this certificate"
+        )
 
-        # Check if the file exists in storage
-        if not certificate.file_path:
-            raise HTTPException(
-                status_code=404, detail="Certificate file not found in storage"
-            )
-
-        # Generate presigned URL for viewing (valid for 1 hour)
+    try:
+        # Generate presigned URL for viewing
         storage_service = DocumentStorageService()
         download_url = storage_service.generate_download_url(
-            certificate.file_path, expiration=3600  # 1 hour
+            cpe_record.document_filename, expiration=3600  # 1 hour expiration
         )
 
         if not download_url:
             raise HTTPException(
-                status_code=500, detail="Failed to generate download URL"
+                status_code=500, detail="Failed to generate document access URL"
             )
 
         return {
             "success": True,
-            "download_url": download_url,
+            "document_url": download_url,
             "certificate_id": record_id,
-            "original_filename": certificate.original_filename,
+            "original_filename": cpe_record.course_title or "certificate.pdf",
             "expires_in": 3600,
-            "content_type": (
-                "application/pdf"
-                if certificate.file_path.endswith(".pdf")
-                else "image/*"
-            ),
+            "message": "Document URL generated successfully",
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error generating certificate view URL: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate view URL")
+        logger.error(f"Error generating document URL for record {record_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve document: {str(e)}"
+        )
+
+
+@router.get("/view-document/{record_id}")
+async def view_document(
+    record_id: int, license_number: str, db: Session = Depends(get_db)
+):
+    """Redirect directly to the document for viewing"""
+
+    # Find the CPE record
+    cpe_record = db.query(CPERecord).filter(CPERecord.id == record_id).first()
+    if not cpe_record:
+        raise HTTPException(status_code=404, detail="Certificate record not found")
+
+    # Verify the license number matches (security check)
+    if cpe_record.cpa_license_number != license_number:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: License number does not match record owner",
+        )
+
+    # Check if document exists
+    if not cpe_record.document_filename:
+        raise HTTPException(
+            status_code=404, detail="No document file associated with this certificate"
+        )
+
+    try:
+        # Generate presigned URL for viewing
+        storage_service = DocumentStorageService()
+        download_url = storage_service.generate_download_url(
+            cpe_record.document_filename, expiration=3600  # 1 hour expiration
+        )
+
+        if not download_url:
+            raise HTTPException(
+                status_code=500, detail="Failed to generate document access URL"
+            )
+
+        # Redirect directly to the document
+        return RedirectResponse(url=download_url)
+
+    except Exception as e:
+        logger.error(f"Error viewing document for record {record_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to view document: {str(e)}"
+        )
