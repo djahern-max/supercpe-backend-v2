@@ -16,6 +16,11 @@ from app.models.cpa import CPA
 from typing import Dict, Any, Optional
 from datetime import datetime
 import json
+from app.services.auth_service import (
+    GoogleAuthService,
+    authenticate_user,
+    get_password_hash,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -359,3 +364,42 @@ async def invalidate_user_tokens(
         raise HTTPException(
             status_code=500, detail=f"Failed to invalidate tokens: {str(e)}"
         )
+
+
+@router.post("/login")
+async def login(data: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Login for existing users"""
+    email = data.get("email")
+    password = data.get("password")
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+
+    user = authenticate_user(db, email, password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    # Optional: Verify CPA license still active
+    if user.license_number:
+        cpa = db.query(CPA).filter(CPA.license_number == user.license_number).first()
+        if not cpa or cpa.status != "ACTIVE":
+            raise HTTPException(status_code=403, detail="CPA license no longer active")
+
+    # Update last login
+    user.last_login = datetime.now()
+    db.commit()
+
+    access_token = create_access_token(data={"sub": user.email, "user_id": user.id})
+    refresh_token = create_refresh_token(data={"sub": user.email, "user_id": user.id})
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "license_number": user.license_number,
+        },
+    }

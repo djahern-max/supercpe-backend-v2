@@ -5,6 +5,7 @@ from app.core.database import get_db
 from app.models.cpa import CPA
 from pydantic import BaseModel
 from datetime import date
+from app.models.user import User
 
 router = APIRouter(prefix="/api/cpas", tags=["CPAs"])
 
@@ -91,4 +92,34 @@ async def get_cpa_stats(db: Session = Depends(get_db)):
         "active_cpas": active_cpas,
         "premium_cpas": premium_cpas,
         "free_cpas": active_cpas - premium_cpas,
+    }
+
+
+@router.get("/verify-passcode")
+async def verify_passcode(passcode: str, db: Session = Depends(get_db)):
+    """Verify passcode and return CPA info for signup"""
+    if not passcode or len(passcode) < 6:
+        raise HTTPException(status_code=400, detail="Invalid passcode format")
+
+    cpa = db.query(CPA).filter(CPA.passcode == passcode.upper()).first()
+
+    if not cpa:
+        raise HTTPException(status_code=404, detail="Invalid passcode")
+
+    # Check if already used
+    existing_user = (
+        db.query(User).filter(User.license_number == cpa.license_number).first()
+    )
+    if existing_user:
+        raise HTTPException(status_code=409, detail="Passcode already used")
+
+    return {
+        "success": True,
+        "cpa": {
+            "license_number": cpa.license_number,
+            "full_name": cpa.full_name,
+            "status": cpa.status,
+            "license_expiration_date": cpa.license_expiration_date,
+            "passcode": cpa.passcode,
+        },
     }

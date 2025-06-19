@@ -1,10 +1,40 @@
-# app/services/auth_service.py - Updated with lowercase settings
+# app/services/auth_service.py - Updated with authenticate_user function
 import requests
 from datetime import datetime, timedelta
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from passlib.context import CryptContext
 from app.core.config import settings
 from app.models.user import User
+
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plain password against its hash"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    """Generate password hash"""
+    return pwd_context.hash(password)
+
+
+def authenticate_user(db: Session, email: str, password: str) -> User:
+    """Authenticate user with email and password"""
+    user = db.query(User).filter(User.email == email).first()
+
+    if not user:
+        return None
+
+    if not user.hashed_password:
+        return None  # User doesn't have a password (maybe Google-only user)
+
+    if not verify_password(password, user.hashed_password):
+        return None
+
+    return user
 
 
 class GoogleAuthService:
