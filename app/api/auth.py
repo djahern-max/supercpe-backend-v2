@@ -47,26 +47,40 @@ async def google_callback(
         # Prepare redirect URL with tokens
         frontend_url = settings.frontend_url
 
-        # IMPROVED: Better redirect logic
-        if user.license_number:
-            # User has license - go directly to their dashboard
-            target = f"/dashboard/{user.license_number}"
-        else:
-            # No license - go to home page where they can enter a license
-            target = "/"
+        # FIXED: Always redirect to the auth callback page, not directly to dashboard
+        # The frontend AuthCallback component will handle the final routing
+        callback_url = f"{frontend_url}/auth/callback"
 
-        # Include user's license number in callback for frontend processing
-        redirect_url = f"{frontend_url}{target}?access_token={access_token}&refresh_token={refresh_token}"
+        # Build query parameters
+        params = [f"access_token={access_token}", f"refresh_token={refresh_token}"]
 
-        # Add license number to URL if available (helps frontend routing)
+        # Include license number if available (helps with routing decision)
         if user.license_number:
-            redirect_url += f"&user_license={user.license_number}"
+            params.append(f"user_license={user.license_number}")
+
+        # Include user info for better UX
+        if user.name:
+            # URL encode the name to handle spaces and special characters
+            import urllib.parse
+
+            encoded_name = urllib.parse.quote(user.name)
+            params.append(f"user_name={encoded_name}")
+
+        redirect_url = f"{callback_url}?{'&'.join(params)}"
+
+        # Add debug logging
+        print(
+            f"OAuth Success: Redirecting user {user.email} (license: {user.license_number}) to: {redirect_url}"
+        )
 
         return RedirectResponse(url=redirect_url)
 
     except Exception as e:
         error_msg = str(e)
-        error_redirect = f"{settings.frontend_url}/auth/error?message={error_msg}"
+        print(f"OAuth callback error: {error_msg}")  # Debug log
+
+        # Redirect to frontend with error
+        error_redirect = f"{settings.frontend_url}/?error=auth_failed&message={urllib.parse.quote(error_msg)}"
         return RedirectResponse(url=error_redirect)
 
 
