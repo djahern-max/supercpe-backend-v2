@@ -123,39 +123,6 @@ async def lookup_passcode(passcode: str, db: Session = Depends(get_db)):
         return {"error": str(e), "found": False}
 
 
-@router.get("/check-code")
-async def check_code(passcode: str, db: Session = Depends(get_db)):
-    """Check passcode and return CPA info"""
-    try:
-        # Find CPA by passcode (exact same logic as your working lookup-passcode)
-        cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
-
-        if not cpa:
-            raise HTTPException(status_code=404, detail="Invalid passcode")
-
-        # Check if user already exists with this license
-        user = db.query(User).filter(User.license_number == cpa.license_number).first()
-
-        if user:
-            raise HTTPException(
-                status_code=409, detail="This passcode has already been used"
-            )
-
-        # Return in format your frontend expects
-        return {
-            "cpa": {
-                "license_number": cpa.license_number,
-                "full_name": cpa.full_name,
-                "status": cpa.status,
-                "passcode": cpa.passcode,
-            }
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Check failed: {str(e)}")
-
-
 @router.get("/lookup-passcode/{passcode}")
 async def lookup_passcode_temp(passcode: str, db: Session = Depends(get_db)):
     """TEMP: Working endpoint for comparison"""
