@@ -121,3 +121,44 @@ async def lookup_passcode(passcode: str, db: Session = Depends(get_db)):
         }
     except Exception as e:
         return {"error": str(e), "found": False}
+
+
+@router.get("/verify-passcode")
+async def verify_passcode(passcode: str, db: Session = Depends(get_db)):
+    """Verify passcode and return CPA info for frontend compatibility"""
+    try:
+        # Find CPA by passcode
+        cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
+
+        if not cpa:
+            raise HTTPException(status_code=404, detail="Invalid passcode")
+
+        # Check if user already exists with this license
+        existing_user = (
+            db.query(User).filter(User.license_number == cpa.license_number).first()
+        )
+
+        if existing_user:
+            # Passcode already used
+            raise HTTPException(
+                status_code=409, detail="This passcode has already been used"
+            )
+
+        # Return success response matching frontend expectations
+        return {
+            "success": True,
+            "cpa": {
+                "license_number": cpa.license_number,
+                "full_name": cpa.full_name,
+                "status": cpa.status,
+                "passcode": cpa.passcode,
+            },
+            "message": "Passcode verified successfully",
+        }
+
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        # Handle unexpected errors
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
