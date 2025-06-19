@@ -148,9 +148,6 @@ async def upload_certificate_authenticated(
             status_code=404, detail="CPA license number not found in NH database"
         )
 
-    # Validate file
-    validate_file(file)
-
     # Check free upload limit
     existing_free_uploads = (
         db.query(CPERecord)
@@ -166,23 +163,12 @@ async def upload_certificate_authenticated(
     has_subscription = stripe_service.has_active_subscription(license_number)
 
     if existing_free_uploads >= MAX_FREE_UPLOADS and not has_subscription:
-        # Return upgrade required response
         raise HTTPException(
             status_code=402,
             detail={
                 "error": "Free upload limit reached",
                 "message": f"You've used all {MAX_FREE_UPLOADS} free uploads",
-                "cpa_info": {
-                    "license_number": license_number,
-                    "name": cpa.full_name,
-                    "uploads_completed": existing_free_uploads,
-                },
                 "upgrade_required": True,
-                "upgrade_flow": {
-                    "step_1": "Subscribe to Professional plan",
-                    "step_2": "Enjoy unlimited uploads",
-                    "benefit": "All your existing data remains accessible",
-                },
             },
         )
 
@@ -198,12 +184,12 @@ async def upload_certificate_authenticated(
                 status_code=500, detail=upload_result.get("error", "Upload failed")
             )
 
-        # Step 2: Parse with AI if requested
+        # Step 2: Parse with AI if requested using your existing process_with_ai function
         parsing_result = None
         if parse_with_ai:
             parsing_result = await process_with_ai(file, license_number)
 
-        # Step 3: Create CPE record from parsing results
+        # Step 3: Create CPE record using your existing structure
         parsed_data = parsing_result.get("parsed_data", {}) if parsing_result else {}
 
         # Parse completion date
@@ -215,12 +201,7 @@ async def upload_certificate_authenticated(
                     completion_date_str
                 ).date()
             except (ValueError, AttributeError):
-                try:
-                    parsed_completion_date = datetime.strptime(
-                        completion_date_str, "%Y-%m-%d"
-                    ).date()
-                except (ValueError, AttributeError):
-                    parsed_completion_date = datetime.utcnow().date()
+                parsed_completion_date = datetime.utcnow().date()
         else:
             parsed_completion_date = datetime.utcnow().date()
 
@@ -230,7 +211,7 @@ async def upload_certificate_authenticated(
         # Create CPE record using your existing model structure
         cpe_record = CPERecord(
             cpa_license_number=license_number,
-            user_id=current_user.id,  # Link to authenticated user
+            user_id=current_user.id,  # KEY: Link to authenticated user
             document_filename=upload_result.get("filename", file.filename),
             original_filename=file.filename,
             # CPE details from AI parsing
@@ -254,16 +235,8 @@ async def upload_certificate_authenticated(
             raw_text=parsing_result.get("raw_text", "") if parsing_result else "",
             # Storage info
             storage_tier=storage_tier,
-            certificate_url=upload_result.get("secure_url", ""),
-            file_name=file.filename,
-            file_size=len(await file.read()) if hasattr(file, "read") else 0,
             # Verification status
             is_verified=False,
-            ai_extracted=parse_with_ai
-            and parsing_result
-            and parsing_result.get("success", False),
-            raw_ai_data=parsing_result if parsing_result else None,
-            created_at=datetime.utcnow(),
         )
 
         db.add(cpe_record)
@@ -292,12 +265,6 @@ async def upload_certificate_authenticated(
                 "storage_tier": storage_tier,
                 "authenticated_upload": True,
             },
-            "compliance_tracking": {
-                "cpe_hours_added": cpe_record.cpe_credits,
-                "ethics_hours_added": cpe_record.ethics_credits,
-                "database_record_id": cpe_record.id,
-                "tracked_by_user": current_user.id,
-            },
             "upload_status": {
                 "uploads_used": existing_free_uploads + 1,
                 "remaining_uploads": remaining_uploads,
@@ -305,20 +272,6 @@ async def upload_certificate_authenticated(
                 "has_subscription": has_subscription,
                 "tier": "PREMIUM" if has_subscription else "FREE",
             },
-            "next_steps": [
-                f"✅ Certificate #{existing_free_uploads + 1} processed and saved",
-                "📊 View your compliance dashboard",
-                "📋 Generate professional audit reports",
-                (
-                    f"⬆️ Upgrade available after {remaining_uploads} more uploads"
-                    if remaining_uploads > 0 and not has_subscription
-                    else (
-                        "🎉 Enjoying unlimited uploads!"
-                        if has_subscription
-                        else "⬆️ Ready to upgrade for unlimited uploads!"
-                    )
-                ),
-            ],
         }
 
     except Exception as e:
@@ -1279,8 +1232,7 @@ async def upload_certificate_authenticated(
 
     try:
         # Save file temporarily
-        upload_service = UploadService()
-        ai_service = AIService()
+        storage_service = DocumentStorageService()
 
         # Create temp file
         temp_dir = "/tmp"
