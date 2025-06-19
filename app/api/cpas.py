@@ -101,7 +101,7 @@ async def verify_passcode(passcode: str, db: Session = Depends(get_db)):
     if not passcode or len(passcode) < 6:
         raise HTTPException(status_code=400, detail="Invalid passcode format")
 
-    cpa = db.query(CPA).filter(CPA.passcode == passcode.upper()).first()
+    cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
 
     if not cpa:
         raise HTTPException(status_code=404, detail="Invalid passcode")
