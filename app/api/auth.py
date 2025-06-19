@@ -80,6 +80,8 @@ async def google_callback(
         print(f"OAuth callback error: {error_msg}")  # Debug log
 
         # Redirect to frontend with error
+        import urllib.parse
+
         error_redirect = f"{settings.frontend_url}/?error=auth_failed&message={urllib.parse.quote(error_msg)}"
         return RedirectResponse(url=error_redirect)
 
