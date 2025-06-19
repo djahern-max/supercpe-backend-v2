@@ -127,7 +127,7 @@ async def lookup_passcode(passcode: str, db: Session = Depends(get_db)):
 async def verify_passcode(passcode: str, db: Session = Depends(get_db)):
     """Verify passcode and return CPA info for frontend compatibility"""
     try:
-        # Find CPA by passcode
+        # Use the exact same query as lookup-passcode (which works)
         cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
 
         if not cpa:
@@ -157,8 +157,31 @@ async def verify_passcode(passcode: str, db: Session = Depends(get_db)):
         }
 
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        # Handle unexpected errors
+        print(f"Database error in verify-passcode: {str(e)}")  # Add debugging
         raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+
+
+@router.get("/debug-passcode")  # Temporary debugging endpoint
+async def debug_passcode(passcode: str, db: Session = Depends(get_db)):
+    """Debug passcode lookup"""
+    try:
+        print(f"Looking for passcode: '{passcode}'")
+
+        # Check all passcodes in database
+        all_passcodes = db.query(CPA.passcode).filter(CPA.passcode.isnot(None)).all()
+        print(f"All passcodes in DB: {[p[0] for p in all_passcodes]}")
+
+        # Try the exact query
+        cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
+        print(f"Found CPA: {cpa}")
+
+        return {
+            "passcode_searched": passcode,
+            "found_cpa": cpa is not None,
+            "all_passcodes": [p[0] for p in all_passcodes],
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
