@@ -585,3 +585,29 @@ async def set_password(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to set password: {str(e)}")
+
+
+@router.put("/admin/set-passcode/{license_number}")
+async def set_passcode_for_testing(
+    license_number: str, passcode: str, db: Session = Depends(get_db)
+):
+    """Admin endpoint to set passcode for testing"""
+    cpa = db.query(CPA).filter(CPA.license_number == license_number).first()
+
+    if not cpa:
+        raise HTTPException(status_code=404, detail="CPA not found")
+
+    cpa.passcode = passcode
+    db.commit()
+    db.refresh(cpa)
+
+    return {
+        "success": True,
+        "message": f"Passcode set for {cpa.full_name}",
+        "cpa": {
+            "license_number": cpa.license_number,
+            "full_name": cpa.full_name,
+            "passcode": cpa.passcode,
+            "status": cpa.status,
+        },
+    }
