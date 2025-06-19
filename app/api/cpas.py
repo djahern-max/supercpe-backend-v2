@@ -185,3 +185,39 @@ async def debug_passcode(passcode: str, db: Session = Depends(get_db)):
 
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.get("/diagnose-passcode")
+async def diagnose_passcode(passcode: str, db: Session = Depends(get_db)):
+    """Diagnose passcode lookup issues"""
+    try:
+        # Multiple ways to find the CPA
+        result = {}
+
+        # Method 1: Exact same as lookup-passcode
+        cpa1 = db.query(CPA).filter(CPA.passcode == passcode).first()
+        result["method1_direct"] = cpa1 is not None
+
+        # Method 2: Case sensitive check
+        cpa2 = db.query(CPA).filter(CPA.passcode.ilike(passcode)).first()
+        result["method2_case_insensitive"] = cpa2 is not None
+
+        # Method 3: Find by license and check passcode
+        cpa3 = db.query(CPA).filter(CPA.license_number == "07308").first()
+        result["method3_by_license"] = {
+            "found": cpa3 is not None,
+            "passcode_in_db": cpa3.passcode if cpa3 else None,
+            "passcode_matches": cpa3.passcode == passcode if cpa3 else False,
+        }
+
+        # Method 4: Raw SQL
+        raw_result = db.execute(
+            "SELECT license_number, passcode FROM cpas WHERE passcode = :passcode",
+            {"passcode": passcode},
+        ).fetchone()
+        result["method4_raw_sql"] = raw_result is not None
+
+        return result
+
+    except Exception as e:
+        return {"error": str(e)}
