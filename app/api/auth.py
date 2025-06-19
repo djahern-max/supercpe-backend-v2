@@ -46,12 +46,16 @@ async def google_callback(
 
         # Prepare redirect URL with tokens
         frontend_url = settings.frontend_url
-        target = redirect_target or "/dashboard"
-        redirect_url = f"{frontend_url}{target}?access_token={access_token}&refresh_token={refresh_token}"
 
-        # If user has a license number, add it to the redirect
+        # CHANGE: Default to reporting requirements instead of generic dashboard
         if user.license_number:
-            redirect_url += f"&license_number={user.license_number}"
+            # User has license - go to their dashboard with reporting tab
+            target = f"/dashboard/{user.license_number}?tab=reporting"
+        else:
+            # No license - go to general reporting requirements page
+            target = redirect_target or "/reporting-requirements"
+
+        redirect_url = f"{frontend_url}{target}?access_token={access_token}&refresh_token={refresh_token}"
 
         return RedirectResponse(url=redirect_url)
 
