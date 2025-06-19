@@ -123,101 +123,34 @@ async def lookup_passcode(passcode: str, db: Session = Depends(get_db)):
         return {"error": str(e), "found": False}
 
 
-@router.get("/verify-passcode")
-async def verify_passcode(passcode: str, db: Session = Depends(get_db)):
-    """Verify passcode and return CPA info for frontend compatibility"""
+@router.get("/check-code")
+async def check_code(passcode: str, db: Session = Depends(get_db)):
+    """Check passcode and return CPA info"""
     try:
-        # Use the exact same query as lookup-passcode (which works)
+        # Find CPA by passcode (exact same logic as your working lookup-passcode)
         cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
 
         if not cpa:
             raise HTTPException(status_code=404, detail="Invalid passcode")
 
         # Check if user already exists with this license
-        existing_user = (
-            db.query(User).filter(User.license_number == cpa.license_number).first()
-        )
+        user = db.query(User).filter(User.license_number == cpa.license_number).first()
 
-        if existing_user:
-            # Passcode already used
+        if user:
             raise HTTPException(
                 status_code=409, detail="This passcode has already been used"
             )
 
-        # Return success response matching frontend expectations
+        # Return in format your frontend expects
         return {
-            "success": True,
             "cpa": {
                 "license_number": cpa.license_number,
                 "full_name": cpa.full_name,
                 "status": cpa.status,
                 "passcode": cpa.passcode,
-            },
-            "message": "Passcode verified successfully",
+            }
         }
-
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Database error in verify-passcode: {str(e)}")  # Add debugging
-        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
-
-
-@router.get("/debug-passcode")  # Temporary debugging endpoint
-async def debug_passcode(passcode: str, db: Session = Depends(get_db)):
-    """Debug passcode lookup"""
-    try:
-        print(f"Looking for passcode: '{passcode}'")
-
-        # Check all passcodes in database
-        all_passcodes = db.query(CPA.passcode).filter(CPA.passcode.isnot(None)).all()
-        print(f"All passcodes in DB: {[p[0] for p in all_passcodes]}")
-
-        # Try the exact query
-        cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
-        print(f"Found CPA: {cpa}")
-
-        return {
-            "passcode_searched": passcode,
-            "found_cpa": cpa is not None,
-            "all_passcodes": [p[0] for p in all_passcodes],
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@router.get("/diagnose-passcode")
-async def diagnose_passcode(passcode: str, db: Session = Depends(get_db)):
-    """Diagnose passcode lookup issues"""
-    try:
-        # Multiple ways to find the CPA
-        result = {}
-
-        # Method 1: Exact same as lookup-passcode
-        cpa1 = db.query(CPA).filter(CPA.passcode == passcode).first()
-        result["method1_direct"] = cpa1 is not None
-
-        # Method 2: Case sensitive check
-        cpa2 = db.query(CPA).filter(CPA.passcode.ilike(passcode)).first()
-        result["method2_case_insensitive"] = cpa2 is not None
-
-        # Method 3: Find by license and check passcode
-        cpa3 = db.query(CPA).filter(CPA.license_number == "07308").first()
-        result["method3_by_license"] = {
-            "found": cpa3 is not None,
-            "passcode_in_db": cpa3.passcode if cpa3 else None,
-            "passcode_matches": cpa3.passcode == passcode if cpa3 else False,
-        }
-
-        # Method 4: Raw SQL
-        raw_result = db.execute(
-            "SELECT license_number, passcode FROM cpas WHERE passcode = :passcode",
-            {"passcode": passcode},
-        ).fetchone()
-        result["method4_raw_sql"] = raw_result is not None
-
-        return result
-
-    except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=f"Check failed: {str(e)}")
