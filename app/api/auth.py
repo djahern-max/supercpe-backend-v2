@@ -72,6 +72,15 @@ async def login(data: Dict[str, Any] = Body(...), db: Session = Depends(get_db))
     }
 
 
+@router.get("/google")
+async def google_oauth_init(db: Session = Depends(get_db)):
+    """Initiate Google OAuth flow"""
+    auth_service = GoogleAuthService(db)
+    oauth_url = auth_service.get_oauth_url()
+
+    return {"oauth_url": oauth_url, "redirect_to": oauth_url}
+
+
 @router.get("/google/callback")
 async def google_callback(
     code: str, redirect_target: str = None, db: Session = Depends(get_db)
