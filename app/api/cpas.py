@@ -154,3 +154,24 @@ async def check_code(passcode: str, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Check failed: {str(e)}")
+
+
+@router.get("/lookup-passcode/{passcode}")
+async def lookup_passcode_temp(passcode: str, db: Session = Depends(get_db)):
+    """TEMP: Working endpoint for comparison"""
+    try:
+        cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
+        if not cpa:
+            return {"found": False, "message": "No CPA found with that passcode"}
+
+        return {
+            "found": True,
+            "cpa": {
+                "license_number": cpa.license_number,
+                "full_name": cpa.full_name,
+                "status": cpa.status,
+                "passcode": cpa.passcode,
+            },
+        }
+    except Exception as e:
+        return {"error": str(e), "found": False}
