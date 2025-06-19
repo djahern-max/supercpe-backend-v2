@@ -26,12 +26,50 @@ from app.services.auth_service import (
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
 
-@router.get("/google/login")
-async def google_login(db: Session = Depends(get_db)):
-    """Generate Google OAuth URL for login"""
-    auth_service = GoogleAuthService(db)
-    oauth_url = auth_service.get_oauth_url()
-    return {"auth_url": oauth_url}
+# 🔥 ENHANCED LOGIN: Check for password reset requirement
+@router.post("/login")
+async def login(data: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Login for existing users"""
+    email = data.get("email")
+    password = data.get("password")
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+
+    user = authenticate_user(db, email, password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    # Optional: Verify CPA license still active
+    if user.license_number:
+        cpa = db.query(CPA).filter(CPA.license_number == user.license_number).first()
+        if not cpa or cpa.status != "ACTIVE":
+            raise HTTPException(status_code=403, detail="CPA license no longer active")
+
+    # Update last login
+    user.last_login = datetime.now()
+    db.commit()
+
+    access_token = create_access_token(data={"sub": user.email, "user_id": user.id})
+    refresh_token = create_refresh_token(data={"sub": user.email, "user_id": user.id})
+
+    # 🔥 CHECK IF PASSWORD RESET IS REQUIRED
+    requires_password_reset = False
+    if user.user_metadata and user.user_metadata.get("must_reset_password"):
+        requires_password_reset = True
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "license_number": user.license_number,
+        },
+        "requires_password_reset": requires_password_reset,  # 🔥 ADD THIS FLAG
+    }
 
 
 @router.get("/google/callback")
@@ -488,3 +526,137 @@ async def signup_with_passcode(
         raise HTTPException(
             status_code=500, detail=f"Failed to create account: {str(e)}"
         )
+
+
+@router.post("/signup-with-passcode")
+async def signup_with_passcode(
+    data: Dict[str, Any] = Body(...), db: Session = Depends(get_db)
+):
+    """Create account using passcode verification"""
+    email = data.get("email")
+    name = data.get("name")
+    passcode = data.get("passcode")
+
+    if not email or not name or not passcode:
+        raise HTTPException(
+            status_code=400, detail="Email, name, and passcode are required"
+        )
+
+    # Verify the passcode and get CPA info
+    cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
+    if not cpa:
+        raise HTTPException(status_code=404, detail="Invalid passcode")
+
+    # Check if user already exists with this email
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=409, detail="Account with this email already exists"
+        )
+
+    # Check if license is already connected to another user
+    existing_license_user = (
+        db.query(User).filter(User.license_number == cpa.license_number).first()
+    )
+    if existing_license_user:
+        raise HTTPException(
+            status_code=409, detail="This passcode has already been used"
+        )
+
+    try:
+        # 🔥 SOLUTION: Generate a secure default password
+        import secrets
+        import string
+
+        # Generate a secure 16-character temporary password
+        temp_password = "".join(
+            secrets.choice(string.ascii_letters + string.digits + "!@#$%")
+            for _ in range(16)
+        )
+        hashed_temp_password = get_password_hash(temp_password)
+
+        # Create new user with the license from passcode AND a hashed password
+        user = User(
+            email=email,
+            name=name,
+            license_number=cpa.license_number,
+            auth_provider="email",  # Keep as email since they can use email/password login
+            hashed_password=hashed_temp_password,  # 🔥 ADD THIS!
+            is_verified=True,
+            is_active=True,
+            created_at=datetime.now(),
+            last_login=datetime.now(),
+            # Add a flag to force password reset on next login
+            user_metadata={"must_reset_password": True, "signup_method": "passcode"},
+        )
+
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        # Generate tokens
+        access_token = create_access_token(data={"sub": user.email, "user_id": user.id})
+        refresh_token = create_refresh_token(
+            data={"sub": user.email, "user_id": user.id}
+        )
+
+        return {
+            "success": True,
+            "message": "Account created successfully",
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "name": user.name,
+                "license_number": user.license_number,
+                "auth_provider": user.auth_provider,
+            },
+            # 🔥 RETURN THE TEMPORARY PASSWORD so user knows it
+            "temporary_password": temp_password,
+            "requires_password_reset": True,
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create account: {str(e)}"
+        )
+
+
+# 🔥 ADD NEW ENDPOINT: Set Password for Passcode Users
+@router.post("/set-password")
+async def set_password(
+    data: Dict[str, Any] = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Allow users to set their own password (for passcode users)"""
+    new_password = data.get("password")
+
+    if not new_password:
+        raise HTTPException(status_code=400, detail="Password is required")
+
+    if len(new_password) < 8:
+        raise HTTPException(
+            status_code=400, detail="Password must be at least 8 characters"
+        )
+
+    try:
+        # Hash the new password
+        hashed_password = get_password_hash(new_password)
+
+        # Update user's password and clear the reset flag
+        current_user.hashed_password = hashed_password
+        if current_user.user_metadata:
+            current_user.user_metadata.pop("must_reset_password", None)
+        current_user.updated_at = datetime.now()
+
+        db.commit()
+
+        return {"success": True, "message": "Password set successfully"}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to set password: {str(e)}")
