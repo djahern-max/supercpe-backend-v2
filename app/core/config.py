@@ -1,3 +1,5 @@
+# Update your app/core/config.py
+
 from pydantic_settings import BaseSettings
 import os
 
@@ -28,23 +30,24 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_mode: str = "test"
-    stripe_price_id_monthly: str = ""  # New: Price ID for monthly subscription
-    stripe_price_id_annual: str = ""  # New: Price ID for annual subscription
+    stripe_price_id_monthly: str = ""
+    stripe_price_id_annual: str = ""
 
-    # Google Cloud Vision - NEW SETTINGS
+    # Google Cloud Vision
     google_cloud_project: str = ""
     google_application_credentials: str = "/app/gcp-service-account.json"
     gcv_enabled: bool = True
 
-    # Google OAuth - NEW SETTINGS
+    # Google OAuth
     google_client_id: str = ""
     google_client_secret: str = ""
 
-    # Frontend URL - NEW SETTING
+    # URL Configuration - MAKE THESE DYNAMIC
     frontend_url: str = "https://nh.supercpe.com"
+    backend_url: str = "https://nh.supercpe.com"  # ADD THIS
 
     # Environment
-    environment: str = "development"
+    environment: str = "production"  # Change default to production
 
     class Config:
         env_file = ".env"
