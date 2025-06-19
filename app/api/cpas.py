@@ -95,31 +95,29 @@ async def get_cpa_stats(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/verify-passcode")
-async def verify_passcode(passcode: str, db: Session = Depends(get_db)):
-    """Verify passcode and return CPA info for signup"""
-    if not passcode or len(passcode) < 6:
-        raise HTTPException(status_code=400, detail="Invalid passcode format")
+@router.get("/lookup-passcode/{passcode}")
+async def lookup_passcode(passcode: str, db: Session = Depends(get_db)):
+    """Simple passcode lookup - just find the CPA"""
+    try:
+        # Direct database lookup
+        cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
 
-    cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
+        if not cpa:
+            return {"found": False, "message": "No CPA found with that passcode"}
 
-    if not cpa:
-        raise HTTPException(status_code=404, detail="Invalid passcode")
+        # Check if user exists
+        user = db.query(User).filter(User.license_number == cpa.license_number).first()
 
-    # Check if already used
-    existing_user = (
-        db.query(User).filter(User.license_number == cpa.license_number).first()
-    )
-    if existing_user:
-        raise HTTPException(status_code=409, detail="Passcode already used")
-
-    return {
-        "success": True,
-        "cpa": {
-            "license_number": cpa.license_number,
-            "full_name": cpa.full_name,
-            "status": cpa.status,
-            "license_expiration_date": cpa.license_expiration_date,
-            "passcode": cpa.passcode,
-        },
-    }
+        return {
+            "found": True,
+            "cpa": {
+                "license_number": cpa.license_number,
+                "full_name": cpa.full_name,
+                "status": cpa.status,
+                "passcode": cpa.passcode,
+            },
+            "user_exists": user is not None,
+            "ready_for_signup": user is None,
+        }
+    except Exception as e:
+        return {"error": str(e), "found": False}
