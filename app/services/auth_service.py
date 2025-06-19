@@ -12,7 +12,7 @@ class GoogleAuthService:
         self.db = db
         self.client_id = settings.google_client_id
         self.client_secret = settings.google_client_secret
-        self.redirect_uri = f"{settings.frontend_url}/auth/google/callback"
+        self.redirect_uri = f"{settings.backend_url}/api/auth/google/callback"
 
     def get_oauth_url(self):
         """Generate the Google OAuth URL for authorization"""

@@ -36,7 +36,7 @@ numpy==2.3.0
 openpyxl==3.1.5
 packaging==25.0
 pandas==2.2.3
-passlib==1.7.4
+passlib[bcrypt]==1.7.4
 pdf2image==1.17.0
 pillow==10.4.0
 proto-plus==1.26.1
@@ -50,7 +50,7 @@ pydantic_core==2.27.1
 pydantic-settings==2.6.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
-python-jose==3.5.0
+python-jose[cryptography]==3.5.0
 python-multipart==0.0.12
 pytz==2025.2
 PyYAML==6.0.2
@@ -69,12 +69,3 @@ uvicorn==0.32.1
 uvloop==0.21.0
 watchfiles==1.1.0
 websockets==15.0.1
-# JWT Authentication
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-
-# HTTP Bearer token support (should already be included with FastAPI)
-python-multipart==0.0.6
-
-# For Google OAuth (if not already included)
-requests==2.31.0
