@@ -1,5 +1,5 @@
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError  # ADD THIS IMPORT
 from fastapi import UploadFile
 from app.core.config import settings
 import uuid
@@ -135,34 +135,58 @@ class DocumentStorageService:
     def delete_file(self, file_key: str) -> dict:
         """Delete a file from Digital Ocean Spaces"""
         try:
-            # Check if file exists
+            logger.info(f"Attempting to delete file: {file_key}")
+
+            # Check if file exists first
             try:
                 self.client.head_object(Bucket=self.bucket, Key=file_key)
+                logger.info(f"File exists in storage: {file_key}")
             except ClientError as e:
                 if e.response["Error"]["Code"] == "404":
                     # File doesn't exist, but we'll consider this a successful deletion
+                    logger.info(f"File already doesn't exist in storage: {file_key}")
                     return {
                         "success": True,
-                        "message": "File does not exist in storage",
+                        "message": "File does not exist in storage (already deleted)",
                         "file_key": file_key,
                     }
                 else:
-                    # Some other error occurred
+                    # Some other error occurred while checking
+                    logger.error(f"Error checking file existence: {e}")
                     raise
 
             # Delete the file
+            logger.info(f"Deleting file from Digital Ocean Spaces: {file_key}")
             self.client.delete_object(Bucket=self.bucket, Key=file_key)
 
-            logger.info(f"Successfully deleted file: {file_key}")
-            return {
-                "success": True,
-                "message": "File deleted successfully",
-                "file_key": file_key,
-            }
+            # Verify deletion by trying to access the file again
+            try:
+                self.client.head_object(Bucket=self.bucket, Key=file_key)
+                # If we get here, the file still exists, which means deletion failed
+                logger.error(f"File still exists after deletion attempt: {file_key}")
+                return {
+                    "success": False,
+                    "error": "File still exists after deletion attempt",
+                    "file_key": file_key,
+                }
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "404":
+                    # File doesn't exist anymore, which means deletion was successful
+                    logger.info(f"Successfully deleted file: {file_key}")
+                    return {
+                        "success": True,
+                        "message": "File deleted successfully from Digital Ocean Spaces",
+                        "file_key": file_key,
+                    }
+                else:
+                    # Some other error occurred while verifying
+                    logger.error(f"Error verifying deletion: {e}")
+                    raise
+
         except Exception as e:
             logger.error(f"Error deleting file {file_key}: {str(e)}")
             return {
                 "success": False,
-                "error": f"Failed to delete file: {str(e)}",
+                "error": f"Failed to delete file from storage: {str(e)}",
                 "file_key": file_key,
             }

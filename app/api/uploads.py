@@ -22,6 +22,7 @@ from datetime import datetime
 import logging
 import json
 from fastapi.responses import RedirectResponse
+from botocore.exceptions import ClientError
 
 
 logger = logging.getLogger(__name__)
@@ -678,9 +679,6 @@ async def analyze_certificate_preview(
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
-# ===== CRUD ENDPOINTS =====
-
-
 @router.delete("/certificate/{record_id}")
 async def delete_certificate(
     record_id: int, license_number: str, db: Session = Depends(get_db)
@@ -699,25 +697,143 @@ async def delete_certificate(
             detail="Access denied: License number does not match record owner",
         )
 
-    # Delete the file from storage if it exists
+    storage_deletion_result = None
+    storage_service = DocumentStorageService()
+
+    # Step 1: Delete the file from Digital Ocean Spaces if it exists
     try:
         if cpe_record.document_filename:
-            storage_service = DocumentStorageService()
-            # Note: You'll need to add delete_file method to DocumentStorageService
-            # delete_result = storage_service.delete_file(cpe_record.document_filename)
+            logger.info(f"Deleting file from storage: {cpe_record.document_filename}")
+            storage_deletion_result = storage_service.delete_file(
+                cpe_record.document_filename
+            )
+
+            if not storage_deletion_result["success"]:
+                logger.warning(
+                    f"Failed to delete file from storage: {storage_deletion_result.get('error')}"
+                )
+                # Continue with database deletion even if file deletion fails
+        else:
+            logger.info(f"No file to delete for certificate {record_id}")
+            storage_deletion_result = {
+                "success": True,
+                "message": "No file associated with record",
+            }
+
+    except Exception as storage_error:
+        logger.error(f"Error deleting file from storage: {storage_error}")
+        # Continue with database deletion even if storage deletion fails
+        storage_deletion_result = {"success": False, "error": str(storage_error)}
+
+    # Step 2: Delete the database record
+    try:
+        logger.info(f"Deleting database record for certificate {record_id}")
+
+        # Store certificate info for response
+        certificate_info = {
+            "id": cpe_record.id,
+            "course_title": cpe_record.course_title,
+            "cpe_credits": cpe_record.cpe_credits,
+            "completion_date": (
+                cpe_record.completion_date.isoformat()
+                if cpe_record.completion_date
+                else None
+            ),
+            "provider": cpe_record.provider,
+            "document_filename": cpe_record.document_filename,
+        }
+
+        # Delete from database
+        db.delete(cpe_record)
+        db.commit()
+
+        logger.info(f"Successfully deleted certificate {record_id} from database")
+
+        return {
+            "success": True,
+            "message": "Certificate deleted successfully",
+            "certificate_id": record_id,
+            "certificate_info": certificate_info,
+            "storage_deletion": storage_deletion_result,
+            "database_deletion": {
+                "success": True,
+                "message": "Record removed from database",
+            },
+        }
+
+    except Exception as db_error:
+        logger.error(f"Error deleting certificate from database: {db_error}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete certificate from database: {str(db_error)}",
+        )
+
+
+# Also, make sure your DocumentStorageService.delete_file method is working properly.
+# Your delete_file method looks correct, but let me provide an enhanced version:
+
+# In app/services/document_storage.py, replace the delete_file method with this enhanced version:
+
+
+def delete_file(self, file_key: str) -> dict:
+    """Delete a file from Digital Ocean Spaces"""
+    try:
+        logger.info(f"Attempting to delete file: {file_key}")
+
+        # Check if file exists first
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=file_key)
+            logger.info(f"File exists in storage: {file_key}")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "404":
+                # File doesn't exist, but we'll consider this a successful deletion
+                logger.info(f"File already doesn't exist in storage: {file_key}")
+                return {
+                    "success": True,
+                    "message": "File does not exist in storage (already deleted)",
+                    "file_key": file_key,
+                }
+            else:
+                # Some other error occurred while checking
+                logger.error(f"Error checking file existence: {e}")
+                raise
+
+        # Delete the file
+        logger.info(f"Deleting file from Digital Ocean Spaces: {file_key}")
+        self.client.delete_object(Bucket=self.bucket, Key=file_key)
+
+        # Verify deletion by trying to access the file again
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=file_key)
+            # If we get here, the file still exists, which means deletion failed
+            logger.error(f"File still exists after deletion attempt: {file_key}")
+            return {
+                "success": False,
+                "error": "File still exists after deletion attempt",
+                "file_key": file_key,
+            }
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "404":
+                # File doesn't exist anymore, which means deletion was successful
+                logger.info(f"Successfully deleted file: {file_key}")
+                return {
+                    "success": True,
+                    "message": "File deleted successfully from Digital Ocean Spaces",
+                    "file_key": file_key,
+                }
+            else:
+                # Some other error occurred while verifying
+                logger.error(f"Error verifying deletion: {e}")
+                raise
+
     except Exception as e:
-        logger.error(f"Error deleting file from storage: {str(e)}")
-
-    # Delete the record from the database
-    db.delete(cpe_record)
-    db.commit()
-
-    return {
-        "success": True,
-        "message": "Certificate deleted successfully",
-        "record_id": record_id,
-        "license_number": license_number,
-    }
+        logger.error(f"Error deleting file {file_key}: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Failed to delete file from storage: {str(e)}",
+            "file_key": file_key,
+        }
 
 
 @router.get("/free-tier-status/{license_number}")
