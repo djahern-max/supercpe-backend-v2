@@ -1,4 +1,4 @@
-# app/api/auth.py - Enhanced Authentication Endpoints
+# app/api/auth.py - Enhanced logout endpoint with token management
 from fastapi import APIRouter, Depends, HTTPException, Body, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -47,15 +47,20 @@ async def google_callback(
         # Prepare redirect URL with tokens
         frontend_url = settings.frontend_url
 
-        # CHANGE: Default to reporting requirements instead of generic dashboard
+        # IMPROVED: Better redirect logic
         if user.license_number:
-            # User has license - go to their dashboard with reporting tab
-            target = f"/dashboard/{user.license_number}?tab=reporting"
+            # User has license - go directly to their dashboard
+            target = f"/dashboard/{user.license_number}"
         else:
-            # No license - go to general reporting requirements page
-            target = redirect_target or "/reporting-requirements"
+            # No license - go to home page where they can enter a license
+            target = "/"
 
+        # Include user's license number in callback for frontend processing
         redirect_url = f"{frontend_url}{target}?access_token={access_token}&refresh_token={refresh_token}"
+
+        # Add license number to URL if available (helps frontend routing)
+        if user.license_number:
+            redirect_url += f"&user_license={user.license_number}"
 
         return RedirectResponse(url=redirect_url)
 
@@ -246,6 +251,95 @@ async def signup_with_email(
 
 
 @router.post("/logout")
-async def logout(current_user: User = Depends(get_current_user)):
-    """Logout user (client should clear tokens)"""
-    return {"success": True, "message": "Logged out successfully"}
+async def logout(
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    """Enhanced logout that clears OAuth tokens and updates user state"""
+    try:
+        # Clear OAuth tokens if this was a Google-authenticated user
+        if current_user.auth_provider == "google":
+            current_user.oauth_access_token = None
+            current_user.oauth_refresh_token = None
+            current_user.oauth_token_expires = None
+
+        # Update last logout time (you may want to add this field to your User model)
+        current_user.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "success": True,
+            "message": "Logged out successfully",
+            "redirect_url": "/",
+        }
+
+    except Exception as e:
+        # Even if database update fails, we should still allow logout
+        print(f"Logout error (non-critical): {e}")
+        return {
+            "success": True,
+            "message": "Logged out successfully",
+            "redirect_url": "/",
+        }
+
+
+# NEW: Endpoint to check if user still exists (useful for debugging)
+@router.get("/status")
+async def auth_status(current_user: User = Depends(get_current_user)):
+    """Get authentication status and user info"""
+    return {
+        "authenticated": True,
+        "user": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "name": current_user.name,
+            "license_number": current_user.license_number,
+            "auth_provider": current_user.auth_provider,
+            "is_active": current_user.is_active,
+            "last_login": current_user.last_login,
+        },
+    }
+
+
+# NEW: Admin endpoint to invalidate user tokens (for when deleting users)
+@router.post("/invalidate-user-tokens/{user_id}")
+async def invalidate_user_tokens(
+    user_id: int,
+    db: Session = Depends(get_db),
+    # current_user: User = Depends(get_current_user)  # Add admin check here
+):
+    """
+    Invalidate all tokens for a specific user (call this before deleting a user)
+    This should be called by admin functions before deleting users from the database
+    """
+
+    # TODO: Add admin permission check
+    # if not current_user.is_admin:
+    #     raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Clear all OAuth tokens
+        user.oauth_access_token = None
+        user.oauth_refresh_token = None
+        user.oauth_token_expires = None
+        user.is_active = False  # Deactivate user
+        user.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "success": True,
+            "message": f"All tokens invalidated for user {user.email}",
+            "user_id": user_id,
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to invalidate tokens: {str(e)}"
+        )

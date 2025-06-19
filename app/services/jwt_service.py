@@ -1,4 +1,4 @@
-# app/services/jwt_service.py
+# app/services/jwt_service.py - Enhanced with better user deletion handling
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
@@ -76,6 +76,13 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    # Exception for when user no longer exists (deleted)
+    user_not_found_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="User account no longer exists",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
     try:
         # Extract token from credentials
         token = credentials.credentials
@@ -101,15 +108,17 @@ async def get_current_user(
     # Get user from database
     user = db.query(User).filter(User.id == user_id, User.email == user_email).first()
 
+    # ENHANCED: Better handling when user doesn't exist
     if user is None:
-        raise credentials_exception
+        # User was deleted from database but token is still valid
+        raise user_not_found_exception
 
     if not user.is_active:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="User account is inactive"
         )
 
-    # Update last login
+    # Update last login only if user exists and is active
     user.last_login = datetime.utcnow()
     db.commit()
 
@@ -123,6 +132,24 @@ async def get_current_active_user(
     if not current_user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
+
+
+# NEW: Optional authentication dependency that doesn't raise errors
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """Get current user if authenticated, otherwise return None"""
+
+    if not credentials:
+        return None
+
+    try:
+        # Try to get current user
+        return await get_current_user(credentials, db)
+    except HTTPException:
+        # If authentication fails for any reason, return None
+        return None
 
 
 def create_password_reset_token(email: str) -> str:
