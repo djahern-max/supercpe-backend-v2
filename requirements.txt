@@ -69,3 +69,12 @@ uvicorn==0.32.1
 uvloop==0.21.0
 watchfiles==1.1.0
 websockets==15.0.1
+# JWT Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# HTTP Bearer token support (should already be included with FastAPI)
+python-multipart==0.0.6
+
+# For Google OAuth (if not already included)
+requests==2.31.0
