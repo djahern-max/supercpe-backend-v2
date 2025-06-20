@@ -56,6 +56,9 @@ class User(Base):
 
     # Relationships
     subscriptions = relationship("Subscription", back_populates="user")
+    cpe_records = relationship(
+        "CPERecord", back_populates="user", cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', auth_provider='{self.auth_provider}')>"

@@ -1,3 +1,4 @@
+# app/models/cpe_record.py
 from sqlalchemy import (
     Column,
     Integer,
@@ -15,13 +16,16 @@ from app.core.database import Base
 
 
 class CPERecord(Base):
-    __tablename__ = "cpe_records"  # Fixed: Added missing underscores
+    __tablename__ = "cpe_records"
 
     # Primary key
     id = Column(Integer, primary_key=True, index=True)
 
     # CPA association
     cpa_license_number = Column(String(20), nullable=False, index=True)
+
+    # ADD THIS: User association for authentication tracking
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
 
     # Document reference
     document_filename = Column(String(500), nullable=False)
@@ -46,19 +50,22 @@ class CPERecord(Base):
     verified_by = Column(String(100), nullable=True)
     verification_date = Column(DateTime(timezone=True), nullable=True)
 
-    # ADD THIS FIELD for free tier tracking
+    # Storage tier tracking
     storage_tier = Column(String(20), default="free")  # "free" or "premium"
 
     # System fields
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    def __repr__(self):  # Fixed: Added missing underscores
+    # ADD THIS: Relationship to User model
+    user = relationship("User", back_populates="cpe_records")
+
+    def __repr__(self):
         return f"<CPERecord(cpa={self.cpa_license_number}, credits={self.cpe_credits}, course='{self.course_title}')>"
 
 
 class CPEUploadSession(Base):
-    __tablename__ = "cpe_upload_sessions"  # Fixed: Added missing underscores
+    __tablename__ = "cpe_upload_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
     cpa_license_number = Column(String(20), nullable=False, index=True)
@@ -77,7 +84,7 @@ class CPEUploadSession(Base):
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
-    def __repr__(self):  # Fixed: Added missing underscores
+    def __repr__(self):
         return (
             f"<CPEUploadSession(cpa={self.cpa_license_number}, status={self.status})>"
         )
