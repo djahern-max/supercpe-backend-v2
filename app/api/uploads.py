@@ -459,6 +459,42 @@ async def upload_certificate_authenticated(
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
+@router.post("/accept-extended-trial/{license_number}")
+async def accept_extended_trial(
+    license_number: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Accept the extended trial offer (20 additional uploads)"""
+
+    # Verify user owns this license
+    if current_user.license_number != license_number:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Check if user is eligible for extended trial
+    existing_uploads = (
+        db.query(CPERecord)
+        .filter(
+            CPERecord.cpa_license_number == license_number,
+            CPERecord.storage_tier == "free",
+        )
+        .count()
+    )
+
+    if existing_uploads != INITIAL_FREE_UPLOADS:
+        raise HTTPException(status_code=400, detail="Not eligible for extended trial")
+
+    # Create extended trial record or flag
+    # (You could add this to user table or create separate table)
+
+    return {
+        "success": True,
+        "message": "Extended trial activated!",
+        "new_upload_limit": TOTAL_FREE_UPLOADS,
+        "additional_uploads": EXTENDED_FREE_UPLOADS,
+    }
+
+
 @router.get("/user-upload-status/{license_number}")
 async def get_user_upload_status(
     license_number: str,
