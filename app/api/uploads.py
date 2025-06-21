@@ -184,7 +184,126 @@ def create_cpe_record_from_parsing(
     )
 
 
-# ===== AUTHENTICATION REQUIRED ENDPOINTS =====
+def check_for_similar_certificates(
+    db: Session, license_number: str, user_id: int, parsed_data: dict, filename: str
+) -> dict:
+    """
+    Soft duplicate detection - warns but never blocks uploads
+    Returns warning info if similar certificates found
+    """
+
+    # Get existing certificates for this user/license
+    existing_records = (
+        db.query(CPERecord)
+        .filter(
+            CPERecord.cpa_license_number == license_number, CPERecord.user_id == user_id
+        )
+        .all()
+    )
+
+    if not existing_records:
+        return None  # No existing records to compare
+
+    # Extract data from current upload
+    current_course = (
+        parsed_data.get("course_title", {}).get("value", "").lower().strip()
+    )
+    current_provider = parsed_data.get("provider", {}).get("value", "").lower().strip()
+    current_date_str = parsed_data.get("completion_date", {}).get("value", "")
+    current_filename = filename.lower()
+
+    # Parse current date
+    current_date = None
+    if current_date_str:
+        try:
+            current_date = datetime.fromisoformat(current_date_str).date()
+        except:
+            try:
+                current_date = datetime.strptime(current_date_str, "%Y-%m-%d").date()
+            except:
+                pass
+
+    similar_certificates = []
+
+    for record in existing_records:
+        similarity_score = 0
+        similarity_reasons = []
+
+        # Check filename similarity (exact match gets high score)
+        if (
+            record.original_filename
+            and record.original_filename.lower() == current_filename
+        ):
+            similarity_score += 0.8
+            similarity_reasons.append("identical filename")
+
+        # Check course title similarity
+        if record.course_title and current_course:
+            record_course = record.course_title.lower().strip()
+
+            # Exact match
+            if record_course == current_course:
+                similarity_score += 0.6
+                similarity_reasons.append("identical course title")
+            # High similarity (contains key words)
+            elif (len(current_course) > 10 and current_course in record_course) or (
+                len(record_course) > 10 and record_course in current_course
+            ):
+                similarity_score += 0.4
+                similarity_reasons.append("similar course title")
+
+        # Check provider similarity
+        if record.provider and current_provider:
+            record_provider = record.provider.lower().strip()
+            if record_provider == current_provider:
+                similarity_score += 0.3
+                similarity_reasons.append("same provider")
+
+        # Check date proximity (within 30 days)
+        if record.completion_date and current_date:
+            date_diff = abs((record.completion_date - current_date).days)
+            if date_diff == 0:
+                similarity_score += 0.4
+                similarity_reasons.append("identical completion date")
+            elif date_diff <= 7:
+                similarity_score += 0.2
+                similarity_reasons.append("completion date within 1 week")
+            elif date_diff <= 30:
+                similarity_score += 0.1
+                similarity_reasons.append("completion date within 1 month")
+
+        # If similarity score is high enough, consider it similar
+        if similarity_score >= 0.6:  # Threshold for "similar"
+            similar_certificates.append(
+                {
+                    "record_id": record.id,
+                    "course_title": record.course_title,
+                    "provider": record.provider,
+                    "completion_date": (
+                        record.completion_date.isoformat()
+                        if record.completion_date
+                        else None
+                    ),
+                    "original_filename": record.original_filename,
+                    "similarity_score": round(similarity_score, 2),
+                    "similarity_reasons": similarity_reasons,
+                    "created_at": (
+                        record.created_at.isoformat() if record.created_at else None
+                    ),
+                }
+            )
+
+    # Return warning if similar certificates found
+    if similar_certificates:
+        return {
+            "warning_type": "potential_duplicate",
+            "message": "This certificate appears similar to previous uploads",
+            "similar_count": len(similar_certificates),
+            "similar_certificates": similar_certificates[:3],  # Limit to top 3 matches
+            "recommendation": "Please review your uploaded certificates to avoid duplicates",
+        }
+
+    return None
 
 
 @router.post("/upload-certificate-authenticated/{license_number}")
@@ -266,7 +385,18 @@ async def upload_certificate_authenticated(
         if parse_with_ai:
             parsing_result = await process_with_ai(file, license_number)
 
-        # Step 3: Create CPE record
+        # Step 3: Check for similar certificates (soft warning)
+        duplicate_warning = None
+        if parsing_result and parsing_result.get("parsed_data"):
+            duplicate_warning = check_for_similar_certificates(
+                db,
+                license_number,
+                current_user.id,
+                parsing_result["parsed_data"],
+                file.filename,
+            )
+
+        # Step 4: Create CPE record
         storage_tier = "premium" if has_subscription else "free"
 
         cpe_record = create_cpe_record_from_parsing(
@@ -285,7 +415,8 @@ async def upload_certificate_authenticated(
         # Calculate remaining uploads
         remaining_uploads = max(0, MAX_FREE_UPLOADS - (existing_free_uploads + 1))
 
-        return {
+        # Prepare response
+        response_data = {
             "success": True,
             "message": "Certificate uploaded and processed successfully",
             "record_id": cpe_record.id,
@@ -312,6 +443,12 @@ async def upload_certificate_authenticated(
                 "tier": "PREMIUM" if has_subscription else "FREE",
             },
         }
+
+        # Add duplicate warning if found
+        if duplicate_warning:
+            response_data["duplicate_warning"] = duplicate_warning
+
+        return response_data
 
     except Exception as e:
         logger.error(f"Error in authenticated upload: {e}")
@@ -388,42 +525,6 @@ async def get_user_upload_status(
         ),
         "authenticated": True,
     }
-
-
-# ===== LEGACY/DEPRECATED ENDPOINTS =====
-
-
-@router.post("/upload-certificate-free/{license_number}")
-async def upload_certificate_free_tier(
-    license_number: str,
-    file: UploadFile = File(...),
-    parse_with_ai: bool = True,
-    background_tasks: BackgroundTasks = BackgroundTasks(),
-    db: Session = Depends(get_db),
-):
-    """LEGACY: License-based uploads - NOW REQUIRES AUTHENTICATION"""
-
-    # Return authentication required error
-    raise HTTPException(
-        status_code=401,
-        detail={
-            "error": "Authentication required",
-            "message": "Please sign in to upload certificates",
-            "auth_required": True,
-            "upgrade_info": {
-                "reason": "Security and compliance requirements now require user accounts",
-                "benefits": [
-                    "Secure access to your certificates",
-                    "10 free uploads with full functionality",
-                    "Professional compliance tracking",
-                    "Seamless upgrade to unlimited uploads",
-                ],
-            },
-        },
-    )
-
-
-# ===== PREMIUM ENDPOINTS =====
 
 
 @router.post("/upload-cpe-certificate/{license_number}")
