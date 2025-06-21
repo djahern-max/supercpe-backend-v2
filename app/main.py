@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import cpas, uploads, compliance, time_windows, payments, auth, compliance, time_windows, payments, auth
+from app.api import cpas, uploads, compliance, time_windows, payments, auth
 from fastapi.routing import APIRoute
 from fastapi.responses import PlainTextResponse
 
