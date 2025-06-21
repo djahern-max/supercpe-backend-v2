@@ -53,6 +53,9 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     last_login = Column(DateTime(timezone=True), nullable=True)
+    accepted_extended_trial = Column(Boolean, default=False, nullable=False, index=True)
+    extended_trial_accepted_at = Column(DateTime(timezone=True), nullable=True)
+    initial_trial_completed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     subscriptions = relationship("Subscription", back_populates="user")
