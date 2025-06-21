@@ -48,7 +48,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/upload", tags=["Upload"])
 
 # ===== CONSTANTS =====
-MAX_FREE_UPLOADS = 10
+INITIAL_FREE_UPLOADS = 10  # First phase limit
+EXTENDED_FREE_UPLOADS = 20  # Additional uploads in second phase
+TOTAL_FREE_UPLOADS = 30  # Combined limit (10 + 20)
+MAX_FREE_UPLOADS = 10  # Keep for backward compatibility initially
+
 ALLOWED_FILE_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/jpg"]
 ALLOWED_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png"]
 
@@ -670,7 +674,7 @@ async def analyze_certificate_preview(
 
 @router.get("/free-tier-status/{license_number}")
 async def get_free_tier_status(license_number: str, db: Session = Depends(get_db)):
-    """Get current free tier upload status - NO AUTH REQUIRED for status checking"""
+    """Get current free tier upload status with enhanced phase tracking - NO AUTH REQUIRED for status checking"""
 
     # Verify CPA exists
     cpa = db.query(CPA).filter(CPA.license_number == license_number).first()
@@ -678,7 +682,7 @@ async def get_free_tier_status(license_number: str, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="CPA license number not found")
 
     # Count existing free uploads for this license
-    existing_free_uploads = (
+    total_free_uploads = (
         db.query(CPERecord)
         .filter(
             CPERecord.cpa_license_number == license_number,
@@ -687,33 +691,94 @@ async def get_free_tier_status(license_number: str, db: Session = Depends(get_db
         .count()
     )
 
-    remaining_uploads = max(0, MAX_FREE_UPLOADS - existing_free_uploads)
-
     # Check if user has premium subscription
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
 
+    # Calculate phase-based status
+    if total_free_uploads < INITIAL_FREE_UPLOADS:
+        # Phase 1: Initial free trial (uploads 1-10)
+        upload_phase = "initial"
+        initial_uploads_used = total_free_uploads
+        extended_uploads_used = 0
+        remaining_in_phase = INITIAL_FREE_UPLOADS - total_free_uploads
+        total_remaining = TOTAL_FREE_UPLOADS - total_free_uploads
+        at_limit = False
+        needs_extended_offer = False
+        message = f"✅ {remaining_in_phase} uploads remaining in your free trial"
+
+    elif total_free_uploads == INITIAL_FREE_UPLOADS:
+        # Phase transition: Show extended offer
+        upload_phase = "transition"
+        initial_uploads_used = INITIAL_FREE_UPLOADS
+        extended_uploads_used = 0
+        remaining_in_phase = EXTENDED_FREE_UPLOADS
+        total_remaining = EXTENDED_FREE_UPLOADS
+        at_limit = False
+        needs_extended_offer = True
+        message = "🎉 Free trial complete! Ready for 20 additional uploads?"
+
+    elif total_free_uploads < TOTAL_FREE_UPLOADS:
+        # Phase 2: Extended trial (uploads 11-30)
+        upload_phase = "extended"
+        initial_uploads_used = INITIAL_FREE_UPLOADS
+        extended_uploads_used = total_free_uploads - INITIAL_FREE_UPLOADS
+        remaining_in_phase = TOTAL_FREE_UPLOADS - total_free_uploads
+        total_remaining = TOTAL_FREE_UPLOADS - total_free_uploads
+        at_limit = False
+        needs_extended_offer = False
+        message = f"🚀 {remaining_in_phase} extended uploads remaining"
+
+    else:
+        # Phase 3: Limit reached (30+ uploads)
+        upload_phase = "limit_reached"
+        initial_uploads_used = INITIAL_FREE_UPLOADS
+        extended_uploads_used = EXTENDED_FREE_UPLOADS
+        remaining_in_phase = 0
+        total_remaining = 0
+        at_limit = True
+        needs_extended_offer = False
+        message = "🎯 Ready to upgrade? You've experienced everything SuperCPE offers!"
+
+    # Determine overall status
+    if has_subscription:
+        status = "premium"
+        message = "✨ Premium subscriber - unlimited uploads!"
+    elif total_remaining > 0:
+        status = "available"
+    else:
+        status = "limit_reached"
+
     return {
+        # Basic info
         "license_number": license_number,
         "cpa_name": cpa.full_name,
-        "uploads_used": existing_free_uploads,
-        "uploads_remaining": remaining_uploads,
-        "max_free_uploads": MAX_FREE_UPLOADS,
-        "at_limit": existing_free_uploads >= MAX_FREE_UPLOADS,
         "has_premium_subscription": has_subscription,
-        "status": (
-            "premium"
-            if has_subscription
-            else ("available" if remaining_uploads > 0 else "limit_reached")
-        ),
-        "upgrade_required": existing_free_uploads >= MAX_FREE_UPLOADS
-        and not has_subscription,
-        "message": (
-            f"✅ {remaining_uploads} uploads remaining with full functionality"
-            if remaining_uploads > 0
-            else "🎯 Time to upgrade! You've used all 10 free uploads."
-        ),
-        "auth_required": True,  # Indicate that authentication is now required for uploads
+        "auth_required": True,
+        # Phase tracking (NEW)
+        "upload_phase": upload_phase,
+        "initial_uploads_used": initial_uploads_used,
+        "extended_uploads_used": extended_uploads_used,
+        "total_uploads_used": total_free_uploads,
+        "remaining_in_phase": remaining_in_phase,
+        "total_remaining": total_remaining,
+        # Phase limits (NEW)
+        "limits": {
+            "initial_limit": INITIAL_FREE_UPLOADS,
+            "extended_limit": EXTENDED_FREE_UPLOADS,
+            "total_limit": TOTAL_FREE_UPLOADS,
+        },
+        # Status flags
+        "at_limit": at_limit,
+        "needs_extended_offer": needs_extended_offer,
+        "status": status,
+        "upgrade_required": at_limit and not has_subscription,
+        # User-friendly message
+        "message": message,
+        # Legacy compatibility (keep for existing frontend code)
+        "uploads_used": total_free_uploads,
+        "uploads_remaining": total_remaining,
+        "max_free_uploads": TOTAL_FREE_UPLOADS,  # Updated to reflect new total
     }
 
 
