@@ -134,17 +134,17 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     return {"status": "success"}
 
 
-@router.post("/create-account-for-payment")
-async def create_account_for_payment(
+@router.post("/create-account-and-subscription")
+async def create_account_and_subscription(
     data: dict = Body(...), db: Session = Depends(get_db)
 ):
-    """Create a user account and initiate payment process with plan selection"""
+    """Create a NEW user account and initiate payment process (for anonymous users)"""
 
     # Extract data
     email = data.get("email")
     license_number = data.get("license_number")
     name = data.get("name")
-    plan = data.get("plan", "annual")  # Default to annual if not specified
+    plan = data.get("plan", "annual")
 
     if not email or not license_number:
         raise HTTPException(
@@ -159,32 +159,36 @@ async def create_account_for_payment(
         )
 
     # Check if user account already exists
-    user = db.query(User).filter(User.email == email).first()
-
-    if not user:
-        # Create new user account
-        user = User(
-            email=email,
-            name=name or cpa.full_name,
-            license_number=license_number,
-            auth_provider="email",
-            is_verified=False,  # Will be verified after payment
-            created_at=datetime.now(),
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="An account with this email already exists. Please log in instead.",
         )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+
+    # Create new user account
+    user = User(
+        email=email,
+        name=name or cpa.full_name,
+        license_number=license_number,
+        auth_provider="email",
+        is_verified=False,  # Will be verified after payment
+        created_at=datetime.now(),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
 
     # Define product details based on plan
     if plan == "monthly":
         price_id = settings.stripe_price_id_monthly
         product_name = "SuperCPE Professional Monthly"
-        unit_amount = 1000  # $10.00 in cents
+        unit_amount = 1000
         recurring = {"interval": "month"}
-    else:  # Annual plan
+    else:
         price_id = settings.stripe_price_id_annual
         product_name = "SuperCPE Professional Annual"
-        unit_amount = 9600  # $96.00 in cents
+        unit_amount = 9600
         recurring = {"interval": "year"}
 
     # Create Stripe checkout session
@@ -192,7 +196,7 @@ async def create_account_for_payment(
     checkout_session = stripe_service.create_checkout_session(
         customer_email=email,
         license_number=license_number,
-        price_id=price_id,  # If you have price IDs configured in Stripe
+        price_id=price_id,
         product_name=product_name,
         unit_amount=unit_amount,
         recurring=recurring,
@@ -202,16 +206,17 @@ async def create_account_for_payment(
             "license_number": license_number,
             "plan_type": plan,
             "user_id": user.id,
+            "new_account": True,  # Flag to indicate this was a new account creation
         },
     )
 
-    # Return success with redirect URL to Stripe
     return {
         "success": True,
         "message": "Account created successfully",
         "redirect_url": checkout_session.url,
         "session_id": checkout_session.id,
         "plan": plan,
+        "new_account": True,
     }
 
 
@@ -221,11 +226,10 @@ async def create_subscription_authenticated(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Create subscription for already authenticated user"""
+    """Create subscription for EXISTING authenticated user"""
 
-    # Extract data
     license_number = data.get("license_number")
-    plan = data.get("plan", "annual")  # Default to annual if not specified
+    plan = data.get("plan", "annual")
 
     if not license_number:
         raise HTTPException(status_code=400, detail="License number is required")
@@ -244,24 +248,31 @@ async def create_subscription_authenticated(
             status_code=404, detail="CPA license number not found in NH database"
         )
 
+    # Check if user already has an active subscription
+    stripe_service = StripeService(db)
+    existing_subscription = stripe_service.has_active_subscription(license_number)
+    if existing_subscription:
+        raise HTTPException(
+            status_code=400, detail="You already have an active subscription"
+        )
+
     # Define product details based on plan
     if plan == "monthly":
         price_id = settings.stripe_price_id_monthly
         product_name = "SuperCPE Professional Monthly"
-        unit_amount = 1000  # $10.00 in cents
+        unit_amount = 1000
         recurring = {"interval": "month"}
-    else:  # Annual plan
+    else:
         price_id = settings.stripe_price_id_annual
         product_name = "SuperCPE Professional Annual"
-        unit_amount = 9600  # $96.00 in cents
+        unit_amount = 9600
         recurring = {"interval": "year"}
 
     # Create Stripe checkout session using existing user data
-    stripe_service = StripeService(db)
     checkout_session = stripe_service.create_checkout_session(
         customer_email=current_user.email,
         license_number=license_number,
-        price_id=price_id,  # If you have price IDs configured in Stripe
+        price_id=price_id,
         product_name=product_name,
         unit_amount=unit_amount,
         recurring=recurring,
@@ -275,11 +286,11 @@ async def create_subscription_authenticated(
         },
     )
 
-    # Return success with redirect URL to Stripe
     return {
         "success": True,
         "message": "Subscription created successfully",
         "redirect_url": checkout_session.url,
         "session_id": checkout_session.id,
         "plan": plan,
+        "existing_user": True,
     }
