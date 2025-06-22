@@ -338,7 +338,7 @@ async def upload_certificate_authenticated(
     # Validate file
     validate_file(file)
 
-    # Check free upload limit
+    # Check free upload limit with extended trial logic
     existing_free_uploads = (
         db.query(CPERecord)
         .filter(
@@ -352,25 +352,56 @@ async def upload_certificate_authenticated(
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
 
-    if existing_free_uploads >= TOTAL_FREE_UPLOADS and not has_subscription:
-        raise HTTPException(
-            status_code=402,
-            detail={
-                "error": "Free upload limit reached",
-                "message": f"You've used all {TOTAL_FREE_UPLOADS} free uploads",
-                "cpa_info": {
-                    "license_number": license_number,
-                    "name": cpa.full_name,
-                    "uploads_completed": existing_free_uploads,
+    # Determine upload limit based on extended trial status
+    if current_user.accepted_extended_trial:
+        upload_limit = TOTAL_FREE_UPLOADS  # 30 uploads
+    else:
+        upload_limit = INITIAL_FREE_UPLOADS  # 10 uploads
+
+    # Check if user has reached their limit
+    if existing_free_uploads >= upload_limit and not has_subscription:
+        # If user hasn't accepted extended trial and is at initial limit
+        if (
+            not current_user.accepted_extended_trial
+            and existing_free_uploads >= INITIAL_FREE_UPLOADS
+        ):
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "Extended trial offer available",
+                    "message": f"You've completed your initial {INITIAL_FREE_UPLOADS} free uploads",
+                    "extended_trial_offer": {
+                        "additional_uploads": EXTENDED_FREE_UPLOADS,
+                        "total_limit": TOTAL_FREE_UPLOADS,
+                        "action_required": "Accept extended trial to continue",
+                    },
+                    "cpa_info": {
+                        "license_number": license_number,
+                        "name": cpa.full_name,
+                        "uploads_completed": existing_free_uploads,
+                    },
                 },
-                "upgrade_required": True,
-                "upgrade_flow": {
-                    "step_1": "Subscribe to Professional plan",
-                    "step_2": "Enjoy unlimited uploads",
-                    "benefit": "All your existing data remains accessible",
+            )
+        else:
+            # User has reached absolute limit
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "Free upload limit reached",
+                    "message": f"You've used all {upload_limit} free uploads",
+                    "cpa_info": {
+                        "license_number": license_number,
+                        "name": cpa.full_name,
+                        "uploads_completed": existing_free_uploads,
+                    },
+                    "upgrade_required": True,
+                    "upgrade_flow": {
+                        "step_1": "Subscribe to Professional plan",
+                        "step_2": "Enjoy unlimited uploads",
+                        "benefit": "All your existing data remains accessible",
+                    },
                 },
-            },
-        )
+            )
 
     try:
         # Step 1: Upload to Digital Ocean Spaces
@@ -416,8 +447,13 @@ async def upload_certificate_authenticated(
         db.commit()
         db.refresh(cpe_record)
 
-        # Calculate remaining uploads
-        remaining_uploads = max(0, TOTAL_FREE_UPLOADS - (existing_free_uploads + 1))
+        # Calculate remaining uploads based on user's trial status
+        effective_limit = (
+            TOTAL_FREE_UPLOADS
+            if current_user.accepted_extended_trial
+            else INITIAL_FREE_UPLOADS
+        )
+        remaining_uploads = max(0, effective_limit - (existing_free_uploads + 1))
 
         # Prepare response
         response_data = {
@@ -442,9 +478,10 @@ async def upload_certificate_authenticated(
             "upload_status": {
                 "uploads_used": existing_free_uploads + 1,
                 "remaining_uploads": remaining_uploads,
-                "max_free_uploads": MAX_FREE_UPLOADS,
+                "max_free_uploads": effective_limit,
                 "has_subscription": has_subscription,
                 "tier": "PREMIUM" if has_subscription else "FREE",
+                "accepted_extended_trial": current_user.accepted_extended_trial,
             },
         }
 
