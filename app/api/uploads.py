@@ -352,12 +352,12 @@ async def upload_certificate_authenticated(
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
 
-    if existing_free_uploads >= MAX_FREE_UPLOADS and not has_subscription:
+    if existing_free_uploads >= TOTAL_FREE_UPLOADS and not has_subscription:
         raise HTTPException(
             status_code=402,
             detail={
                 "error": "Free upload limit reached",
-                "message": f"You've used all {MAX_FREE_UPLOADS} free uploads",
+                "message": f"You've used all {TOTAL_FREE_UPLOADS} free uploads",
                 "cpa_info": {
                     "license_number": license_number,
                     "name": cpa.full_name,
@@ -417,7 +417,7 @@ async def upload_certificate_authenticated(
         db.refresh(cpe_record)
 
         # Calculate remaining uploads
-        remaining_uploads = max(0, MAX_FREE_UPLOADS - (existing_free_uploads + 1))
+        remaining_uploads = max(0, TOTAL_FREE_UPLOADS - (existing_free_uploads + 1))
 
         # Prepare response
         response_data = {
@@ -982,8 +982,8 @@ async def get_compliance_dashboard_free(
         "upload_status": {
             "free_uploads_used": free_uploads,
             "free_uploads_remaining": max(0, MAX_FREE_UPLOADS - free_uploads),
-            "max_free_uploads": MAX_FREE_UPLOADS,
-            "at_limit": free_uploads >= MAX_FREE_UPLOADS,
+            "max_free_uploads": TOTAL_FREE_UPLOADS,
+            "at_limit": free_uploads >= TOTAL_FREE_UPLOADS,
             "has_subscription": has_subscription,
             "auth_required": True,  # Indicate auth is now required
         },
