@@ -239,7 +239,7 @@ class StripeService:
             raise Exception(f"Customer creation error: {str(e)}")
 
     def handle_successful_payment(self, checkout_session_id: str):
-        """Handle successful payment from Stripe webhook"""
+        """Handle successful payment from Stripe webhook - with duplicate prevention"""
         try:
             print(f"=== HANDLING SUCCESSFUL PAYMENT ===")
             print(f"Checkout Session ID: {checkout_session_id}")
@@ -262,6 +262,31 @@ class StripeService:
                 raise Exception("No license number in session metadata")
 
             print(f"License number from metadata: {license_number}")
+
+            # CHECK FOR EXISTING PAYMENT RECORD TO PREVENT DUPLICATES
+            existing_payment = (
+                self.db.query(Payment)
+                .filter(Payment.stripe_subscription_id == subscription_id)
+                .first()
+            )
+
+            if existing_payment:
+                print(f"Payment already processed for subscription {subscription_id}")
+                return {
+                    "success": True,
+                    "message": "Payment already processed",
+                    "user_id": existing_payment.cpa_license_number,
+                    "subscription_id": subscription_id,
+                    "payment_id": existing_payment.id,
+                    "duplicate_prevented": True,
+                }
+
+            # CHECK FOR EXISTING SUBSCRIPTION TO PREVENT DUPLICATES
+            existing_subscription = (
+                self.db.query(Subscription)
+                .filter(Subscription.stripe_subscription_id == subscription_id)
+                .first()
+            )
 
             # Get or create user
             user = (
@@ -295,12 +320,6 @@ class StripeService:
                 print(f"Found existing user: {user.id}")
 
             # Create or update subscription record
-            existing_subscription = (
-                self.db.query(Subscription)
-                .filter(Subscription.license_number == license_number)
-                .first()
-            )
-
             if existing_subscription:
                 print("Updating existing subscription")
                 # Update existing subscription
@@ -334,11 +353,12 @@ class StripeService:
                 )
                 self.db.add(subscription_record)
 
-            # Create payment record - FIXED: Remove user_id field
+            # Create payment record ONLY if it doesn't exist
             payment = Payment(
-                cpa_license_number=license_number,  # This field exists
-                stripe_payment_intent_id=session.payment_intent,
+                cpa_license_number=license_number,
+                stripe_payment_intent_id=session.payment_intent,  # This might be None for subscriptions
                 stripe_subscription_id=subscription_id,
+                stripe_customer_id=session.customer,
                 amount=session.amount_total / 100,  # Convert from cents
                 currency=session.currency,
                 status="completed",
@@ -360,6 +380,7 @@ class StripeService:
                 "user_id": user.id,
                 "subscription_id": subscription_record.id,
                 "payment_id": payment.id,
+                "duplicate_prevented": False,
             }
 
         except Exception as e:
