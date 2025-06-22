@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import cpas, uploads, compliance, time_windows, payments, auth
+from app.api import cpas, uploads, compliance, time_windows, payments, auth, ce_broker
 from fastapi.routing import APIRoute
 from fastapi.responses import PlainTextResponse
 
@@ -31,6 +31,7 @@ app.include_router(compliance.router)
 app.include_router(time_windows.router)
 app.include_router(payments.router)
 app.include_router(auth.router)
+app.include_router(ce_broker.router)
 
 
 @app.get("/routes-simple", response_class=PlainTextResponse)

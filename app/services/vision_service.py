@@ -1,243 +1,260 @@
-from google.cloud import vision
-import io
+# app/services/vision_service.py - Enhanced for CE Broker Integration
+
 import re
-import json
-from datetime import datetime, date
-from typing import Dict, List, Optional
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 import logging
-from PIL import Image
-from pdf2image import convert_from_path
-import tempfile
-import os
-from app.core.config import settings
+from app.models.cpe_record import CEBrokerMappings
 
 logger = logging.getLogger(__name__)
 
-class CPEParsingService:
+
+class EnhancedVisionService:
+    """Enhanced vision service with CE Broker field extraction"""
+    
     def __init__(self):
-        if settings.gcv_enabled:
-            try:
-                self.vision_client = vision.ImageAnnotatorClient()
-            except Exception as e:
-                logger.error(f"Failed to initialize Google Cloud Vision client: {e}")
-                self.vision_client = None
-        else:
-            self.vision_client = None
-    
-    async def parse_document(self, file_path: str, file_type: str) -> Dict:
-        """Parse CPE document - make best guesses for user to review"""
+        self.confidence_threshold = 0.7
         
-        if not self.vision_client:
-            return {"success": False, "error": "Vision API not enabled or failed to initialize"}
+    def extract_ce_broker_fields(self, raw_text: str, parsed_data: Dict) -> Dict:
+        """Extract CE Broker specific fields from certificate text"""
         
-        try:
-            # Extract text from document
-            images = await self._prepare_document_for_ocr(file_path, file_type)
-            
-            full_text = ""
-            for image_data in images:
-                text = await self._extract_text_from_image(image_data)
-                full_text += text + "\n"
-            
-            # Make best guesses with confidence scores
-            parsed_fields = self._extract_fields_with_confidence(full_text)
-            
-            return {
-                "success": True,
-                "raw_text": full_text,
-                "parsed_data": parsed_fields,
-                "confidence_score": parsed_fields.get("overall_confidence", 0.0),
-                "requires_review": True  # Always require human review
-            }
-            
-        except Exception as e:
-            logger.error(f"Error parsing document: {e}")
-            return {"success": False, "error": str(e)}
-    
-    def _extract_fields_with_confidence(self, text: str) -> Dict:
-        """Extract fields with individual confidence scores"""
+        # Get basic extracted data
+        course_title = parsed_data.get('course_title', '')
+        field_of_study = parsed_data.get('field_of_study', '')
+        instructional_method = self.extract_instructional_method(raw_text)
         
-        fields = {
-            "cpe_hours": {"value": 0.0, "confidence": 0.0, "suggestions": []},
-            "ethics_hours": {"value": 0.0, "confidence": 0.0, "suggestions": []},
-            "course_title": {"value": "", "confidence": 0.0, "suggestions": []},
-            "provider": {"value": "", "confidence": 0.0, "suggestions": []},
-            "completion_date": {"value": "", "confidence": 0.0, "suggestions": []},
-            "certificate_number": {"value": "", "confidence": 0.0, "suggestions": []},
-            "overall_confidence": 0.0,
-            "parsing_notes": []
+        # Auto-detect CE Broker fields
+        subject_areas = CEBrokerMappings.detect_subject_areas(
+            course_title, field_of_study, raw_text
+        )
+        
+        course_type = CEBrokerMappings.detect_course_type(raw_text, instructional_method)
+        
+        delivery_method = CEBrokerMappings.detect_delivery_method(
+            course_type, instructional_method, raw_text
+        )
+        
+        # Extract additional fields
+        nasba_sponsor = self.extract_nasba_sponsor(raw_text)
+        course_code = self.extract_course_code(raw_text)
+        program_level = self.extract_program_level(raw_text)
+        
+        return {
+            'course_type': course_type,
+            'delivery_method': delivery_method,
+            'instructional_method': instructional_method,
+            'subject_areas': subject_areas,
+            'nasba_sponsor_number': nasba_sponsor,
+            'course_code': course_code,
+            'program_level': program_level,
+            'ce_category': self.determine_ce_category(subject_areas, course_title),
+            'ce_broker_ready': self.check_ce_broker_readiness(parsed_data, {
+                'course_type': course_type,
+                'delivery_method': delivery_method,
+                'subject_areas': subject_areas
+            })
         }
-        
-        # Extract CPE hours with multiple patterns and suggestions
-        hour_patterns = [
-            (r'CPE\s+Credits?\s*:?\s*(\d+(?:\.\d+)?)', 0.9),
-            (r'(\d+(?:\.\d+)?)\s*CPE\s+Credits?', 0.8),
-            (r'(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)', 0.6),
-            (r'Credits?\s*:?\s*(\d+(?:\.\d+)?)', 0.5),
-        ]
-        
-        for pattern, confidence in hour_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            for match in matches:
-                try:
-                    hours = float(match)
-                    if 0.5 <= hours <= 80:  # Reasonable range
-                        fields["cpe_hours"]["suggestions"].append({
-                            "value": hours, 
-                            "confidence": confidence,
-                            "context": f"Found in: {self._get_context(text, match)}"
-                        })
-                except ValueError:
-                    continue
-        
-        # Pick best suggestion for each field
-        if fields["cpe_hours"]["suggestions"]:
-            best = max(fields["cpe_hours"]["suggestions"], key=lambda x: x["confidence"])
-            fields["cpe_hours"]["value"] = best["value"]
-            fields["cpe_hours"]["confidence"] = best["confidence"]
-        
-        # Extract course titles - look for likely candidates
-        title_patterns = [
-            (r'for\s+successfully\s+completing\s*\n([^\n]+)', 0.8),
-            (r'(?:course|title|subject)(?:\s*:?\s*)([A-Z][^.!?\n]*)', 0.7),
-            (r'([A-Z][A-Za-z\s&]{10,80})\s*\n', 0.5),
-        ]
-        
-        for pattern, confidence in title_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            for match in matches:
-                title = match.strip()
-                if len(title) > 5 and not any(word in title.lower() for word in ['certificate', 'completion', 'awarded']):
-                    fields["course_title"]["suggestions"].append({
-                        "value": title,
-                        "confidence": confidence,
-                        "context": f"Found in context: {self._get_context(text, title)}"
-                    })
-        
-        if fields["course_title"]["suggestions"]:
-            best = max(fields["course_title"]["suggestions"], key=lambda x: x["confidence"])
-            fields["course_title"]["value"] = best["value"]
-            fields["course_title"]["confidence"] = best["confidence"]
-        
-        # Extract dates - find all possible dates
-        date_patterns = [
-            (r'Date\s*:?\s*([A-Za-z]+,?\s+[A-Za-z]+\s+\d{1,2},?\s+\d{4})', 0.9),
-            (r'(\d{1,2}[/-]\d{1,2}[/-]\d{4})', 0.7),
-            (r'([A-Za-z]+\s+\d{1,2},?\s+\d{4})', 0.6),
-        ]
-        
-        for pattern, confidence in date_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            for match in matches:
-                parsed_date = self._parse_date(match)
-                if parsed_date:
-                    fields["completion_date"]["suggestions"].append({
-                        "value": parsed_date.isoformat(),
-                        "confidence": confidence,
-                        "context": f"Found: {match}"
-                    })
-        
-        if fields["completion_date"]["suggestions"]:
-            best = max(fields["completion_date"]["suggestions"], key=lambda x: x["confidence"])
-            fields["completion_date"]["value"] = best["value"]
-            fields["completion_date"]["confidence"] = best["confidence"]
-        
-        # Extract provider - first few lines often contain organization
-        provider_patterns = [
-            (r'^([A-Z][A-Za-z\s®&]+)\n', 0.8),
-            (r'([A-Z][A-Za-z\s&®]{10,50})\s*(?:Professional|Education|Training|Institute)', 0.9),
-        ]
-        
-        for pattern, confidence in provider_patterns:
-            matches = re.findall(pattern, text, re.MULTILINE)
-            for match in matches:
-                provider = match.strip()
-                if len(provider) > 3:
-                    fields["provider"]["suggestions"].append({
-                        "value": provider,
-                        "confidence": confidence,
-                        "context": "Found at document header"
-                    })
-        
-        if fields["provider"]["suggestions"]:
-            best = max(fields["provider"]["suggestions"], key=lambda x: x["confidence"])
-            fields["provider"]["value"] = best["value"]
-            fields["provider"]["confidence"] = best["confidence"]
-        
-        # Calculate overall confidence
-        confidence_values = [
-            fields["cpe_hours"]["confidence"],
-            fields["course_title"]["confidence"],
-            fields["completion_date"]["confidence"],
-            fields["provider"]["confidence"]
-        ]
-        fields["overall_confidence"] = sum(confidence_values) / len(confidence_values)
-        
-        # Add summary notes
-        fields["parsing_notes"] = [
-            f"✅ Found {len(fields['cpe_hours']['suggestions'])} possible CPE hour values",
-            f"✅ Found {len(fields['course_title']['suggestions'])} possible course titles",
-            f"✅ Found {len(fields['completion_date']['suggestions'])} possible dates",
-            f"✅ Found {len(fields['provider']['suggestions'])} possible providers",
-            f"📝 Overall confidence: {fields['overall_confidence']:.1%} - Review recommended"
-        ]
-        
-        return fields
     
-    def _get_context(self, text: str, match: str, context_length: int = 50) -> str:
-        """Get surrounding context for a match"""
-        try:
-            index = text.find(str(match))
-            if index != -1:
-                start = max(0, index - context_length)
-                end = min(len(text), index + len(str(match)) + context_length)
-                return text[start:end].replace('\n', ' ')
-        except:
-            pass
-        return str(match)
-    
-    # ... (keep the existing helper methods for image processing and date parsing)
-    
-    async def _prepare_document_for_ocr(self, file_path: str, file_type: str) -> List[bytes]:
-        """Convert document to images for OCR processing"""
-        images = []
-        
-        if file_type.lower() == '.pdf':
-            try:
-                pdf_images = convert_from_path(file_path, dpi=300)
-                for pdf_image in pdf_images:
-                    img_byte_arr = io.BytesIO()
-                    pdf_image.save(img_byte_arr, format='PNG')
-                    images.append(img_byte_arr.getvalue())
-            except Exception as e:
-                logger.error(f"Error converting PDF: {e}")
-                raise
-        elif file_type.lower() in ['.jpg', '.jpeg', '.png', '.tiff']:
-            with open(file_path, 'rb') as image_file:
-                images.append(image_file.read())
-        else:
-            raise ValueError(f"Unsupported file type: {file_type}")
-        
-        return images
-    
-    async def _extract_text_from_image(self, image_data: bytes) -> str:
-        """Extract text from image using Google Cloud Vision"""
-        image = vision.Image(content=image_data)
-        response = self.vision_client.text_detection(image=image)
-        texts = response.text_annotations
-        return texts[0].description if texts else ""
-    
-    def _parse_date(self, date_str: str) -> Optional[date]:
-        """Parse various date formats"""
-        date_formats = [
-            "%A, %B %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%m-%d-%Y", 
-            "%m/%d/%y", "%m-%d-%y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d",
-            "%b %d, %Y", "%B %d %Y"
+    def extract_instructional_method(self, raw_text: str) -> Optional[str]:
+        """Extract instructional method from certificate text"""
+        if not raw_text:
+            return None
+            
+        # Common patterns for instructional methods
+        patterns = [
+            r'Instructional Method:\s*([^\n]+)',
+            r'Method:\s*([^\n]+)',
+            r'Delivery:\s*([^\n]+)',
+            r'Format:\s*([^\n]+)',
+            r'(QAS Self-Study)',
+            r'(Group Study)',
+            r'(Individual Study)',
+            r'(Self-Study)',
+            r'(Online)',
+            r'(Webinar)',
+            r'(Classroom)',
+            r'(Seminar)'
         ]
         
-        for fmt in date_formats:
-            try:
-                return datetime.strptime(date_str, fmt).date()
-            except ValueError:
-                continue
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+                
         return None
+    
+    def extract_nasba_sponsor(self, raw_text: str) -> Optional[str]:
+        """Extract NASBA sponsor number from certificate"""
+        if not raw_text:
+            return None
+            
+        # Patterns for NASBA sponsor numbers
+        patterns = [
+            r'NASBA\s*#?\s*(\d+)',
+            r'Sponsor\s*#?\s*(\d+)', 
+            r'NASBA\s+Sponsor\s*#?\s*(\d+)',
+            r'Registry\s*#?\s*(\d+)',
+            r'#(\d{6})',  # 6-digit numbers often NASBA
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+                
+        return None
+    
+    def extract_course_code(self, raw_text: str) -> Optional[str]:
+        """Extract course code from certificate"""
+        if not raw_text:
+            return None
+            
+        patterns = [
+            r'Course Code:\s*([^\n]+)',
+            r'Code:\s*([A-Z0-9\-_]+)',
+            r'Course\s*#:\s*([^\n]+)',
+            r'Program Code:\s*([^\n]+)',
+            r'([A-Z]\d{3}-\d{4}-\d{2}-[A-Z]+)',  # Pattern like M290-2024-01-SSDL
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+                
+        return None
+    
+    def extract_program_level(self, raw_text: str) -> Optional[str]:
+        """Extract program level (Basic, Intermediate, Advanced)"""
+        if not raw_text:
+            return None
+            
+        patterns = [
+            r'Level:\s*(Basic|Intermediate|Advanced)',
+            r'Program Level:\s*(Basic|Intermediate|Advanced)',
+            r'\b(Basic|Intermediate|Advanced)\s+Level',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                return match.group(1).capitalize()
+                
+        return None
+    
+    def determine_ce_category(self, subject_areas: List[str], course_title: str) -> str:
+        """Determine CE category for CE Broker"""
+        
+        # Check for ethics-related content
+        ethics_keywords = ['ethics', 'professional responsibility', 'conduct', 'integrity']
+        ethics_subjects = ['Administrative practices', 'Business law']
+        
+        course_title_lower = (course_title or '').lower()
+        
+        # Check if this is an ethics course
+        if (any(keyword in course_title_lower for keyword in ethics_keywords) or
+            any(subject in subject_areas for subject in ethics_subjects)):
+            return 'Professional Ethics CPE'
+            
+        # Check for other specialized categories
+        if 'Governmental accounting' in subject_areas or 'Governmental auditing' in subject_areas:
+            return 'General CPE'  # Could be more specific if needed
+            
+        return 'General CPE'  # Default
+    
+    def check_ce_broker_readiness(self, parsed_data: Dict, ce_broker_data: Dict) -> bool:
+        """Check if record has all required fields for CE Broker export"""
+        required_fields = [
+            parsed_data.get('course_title'),
+            parsed_data.get('provider'),
+            parsed_data.get('completion_date'),
+            parsed_data.get('cpe_credits'),
+            ce_broker_data.get('course_type'),
+            ce_broker_data.get('delivery_method'),
+            ce_broker_data.get('subject_areas')
+        ]
+        
+        return all(field is not None and field != '' and field != [] for field in required_fields)
+    
+    def enhance_parsed_data(self, raw_text: str, basic_parsed_data: Dict) -> Dict:
+        """Main method to enhance basic parsed data with CE Broker fields"""
+        
+        # Extract CE Broker specific fields
+        ce_broker_fields = self.extract_ce_broker_fields(raw_text, basic_parsed_data)
+        
+        # Combine with basic data
+        enhanced_data = {**basic_parsed_data, **ce_broker_fields}
+        
+        # Add metadata
+        enhanced_data['parsing_enhanced'] = True
+        enhanced_data['enhancement_timestamp'] = datetime.now().isoformat()
+        
+        logger.info(f"Enhanced parsing completed. CE Broker ready: {ce_broker_fields['ce_broker_ready']}")
+        
+        return enhanced_data
+
+
+# Update the existing create_cpe_record_from_parsing function
+def create_enhanced_cpe_record_from_parsing(
+    parsing_result: Dict,
+    file,
+    license_number: str,
+    current_user,
+    upload_result: Dict,
+    storage_tier: str = "free"
+):
+    """Create CPE record with enhanced CE Broker fields"""
+    
+    from app.models.cpe_record import CPERecord
+    from datetime import datetime
+    
+    # Initialize enhanced vision service
+    vision_service = EnhancedVisionService()
+    
+    # Get basic parsed data
+    parsed_data = parsing_result.get("parsed_data", {})
+    raw_text = parsing_result.get("raw_text", "")
+    
+    # Enhance with CE Broker fields
+    enhanced_data = vision_service.enhance_parsed_data(raw_text, parsed_data)
+    
+    # Create CPE record with all fields
+    cpe_record = CPERecord(
+        # Basic fields
+        cpa_license_number=license_number,
+        user_id=current_user.id if current_user else None,
+        document_filename=upload_result.get("file_key", file.filename),
+        original_filename=file.filename,
+        
+        # Core CPE data
+        cpe_credits=enhanced_data.get("cpe_credits", 0.0),
+        ethics_credits=enhanced_data.get("ethics_credits", 0.0),
+        course_title=enhanced_data.get("course_title"),
+        provider=enhanced_data.get("provider"),
+        completion_date=enhanced_data.get("completion_date"),
+        certificate_number=enhanced_data.get("certificate_number"),
+        
+        # CE Broker fields
+        course_type=enhanced_data.get("course_type"),
+        delivery_method=enhanced_data.get("delivery_method"),
+        instructional_method=enhanced_data.get("instructional_method"),
+        subject_areas=enhanced_data.get("subject_areas"),
+        field_of_study=enhanced_data.get("field_of_study"),
+        ce_category=enhanced_data.get("ce_category"),
+        nasba_sponsor_number=enhanced_data.get("nasba_sponsor_number"),
+        course_code=enhanced_data.get("course_code"),
+        program_level=enhanced_data.get("program_level"),
+        ce_broker_ready=enhanced_data.get("ce_broker_ready", False),
+        
+        # Parsing metadata
+        confidence_score=parsing_result.get("confidence_score", 0.0),
+        parsing_method=parsing_result.get("parsing_method", "google_vision"),
+        raw_text=raw_text,
+        parsing_notes=parsing_result.get("notes"),
+        
+        # System fields
+        storage_tier=storage_tier,
+        created_at=datetime.now(),
+    )
+    
+    return cpe_record
