@@ -109,29 +109,14 @@ async def process_with_ai(file: UploadFile, license_number: str):
             if os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
 
-    except ImportError:
-        # Fallback if vision service not available
-        logger.warning("Vision service not available, using mock AI response")
-        return {
-            "success": True,
-            "parsed_data": {
-                "cpe_hours": {"value": 2.0},
-                "ethics_hours": {"value": 0.0},
-                "course_title": {"value": "Professional Development Course"},
-                "provider": {"value": "Professional Education Provider"},
-                "completion_date": {"value": datetime.now().date().isoformat()},
-                "certificate_number": {"value": "CERT-2024-001"},
-            },
-            "confidence_score": 0.85,
-            "raw_text": "Mock AI extraction for development",
-        }
+    except ImportError as e:
+        logger.error(f"Vision service import failed: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Vision service not available: {str(e)}"
+        )
     except Exception as e:
         logger.error(f"AI processing failed: {e}")
-        return {
-            "success": False,
-            "error": f"AI parsing failed: {str(e)}",
-            "requires_manual_entry": True,
-        }
+        raise HTTPException(status_code=500, detail=f"AI parsing failed: {str(e)}")
 
 
 def create_enhanced_cpe_record_from_parsing(
