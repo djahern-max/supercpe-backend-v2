@@ -597,7 +597,54 @@ async def get_user_upload_status(
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
 
-    # Calculate phase-based status (similar to free-tier-status but for authenticated user)
+    # FOR PREMIUM USERS: Override all limits and phases
+    if has_subscription:
+        return {
+            "user": {
+                "id": current_user.id,
+                "email": current_user.email,
+                "name": current_user.name,
+                "license_number": current_user.license_number,
+            },
+            "cpa": {"license_number": license_number, "name": cpa.full_name},
+            "upload_stats": {
+                "total_uploads": user_uploads,
+                "free_uploads_used": free_uploads,
+                "remaining_free_uploads": -1,  # Unlimited
+                "max_free_uploads": -1,  # Unlimited
+                "at_limit": False,  # Never at limit for premium
+                "has_premium_subscription": True,
+            },
+            # Extended trial tracking (not relevant for premium but keep for compatibility)
+            "extended_trial_info": {
+                "accepted_extended_trial": current_user.accepted_extended_trial,
+                "extended_trial_accepted_at": current_user.extended_trial_accepted_at,
+            },
+            # Phase tracking for premium users
+            "upload_phase": "premium",  # Special phase for premium users
+            "initial_uploads_used": (
+                free_uploads
+                if free_uploads <= INITIAL_FREE_UPLOADS
+                else INITIAL_FREE_UPLOADS
+            ),
+            "extended_uploads_used": (
+                max(0, free_uploads - INITIAL_FREE_UPLOADS)
+                if free_uploads > INITIAL_FREE_UPLOADS
+                else 0
+            ),
+            "total_uploads_used": free_uploads,
+            "remaining_in_phase": -1,  # Unlimited
+            "total_remaining": -1,  # Unlimited
+            # Status flags for premium users
+            "at_limit": False,  # Never at limit
+            "needs_extended_offer": False,  # No offer needed
+            "accepted_extended_trial": current_user.accepted_extended_trial,
+            "status": "premium",
+            "message": "✨ Premium subscriber - unlimited uploads!",
+            "authenticated": True,
+        }
+
+    # FOR FREE USERS: Calculate phase-based status (existing logic)
     if free_uploads < INITIAL_FREE_UPLOADS:
         # Phase 1: Initial free trial (uploads 1-10)
         upload_phase = "initial"
@@ -610,27 +657,23 @@ async def get_user_upload_status(
         message = f"✅ {remaining_in_phase} uploads remaining in your free trial"
 
     elif free_uploads == INITIAL_FREE_UPLOADS:
-        # Phase transition: Check if user has accepted extended trial
-        if current_user.accepted_extended_trial:
-            # User accepted, they're in extended phase
-            upload_phase = "extended"
-            initial_uploads_used = INITIAL_FREE_UPLOADS
-            extended_uploads_used = 0
-            remaining_in_phase = EXTENDED_FREE_UPLOADS
-            total_remaining = EXTENDED_FREE_UPLOADS
-            at_limit = False
-            needs_extended_offer = False
-            message = f"🚀 {remaining_in_phase} extended uploads remaining"
-        else:
-            # Show extended offer
-            upload_phase = "transition"
-            initial_uploads_used = INITIAL_FREE_UPLOADS
-            extended_uploads_used = 0
-            remaining_in_phase = EXTENDED_FREE_UPLOADS
-            total_remaining = EXTENDED_FREE_UPLOADS
-            at_limit = False
-            needs_extended_offer = True
-            message = "🎉 Free trial complete! Ready for 20 additional uploads?"
+        # Phase transition: Show extended offer
+        upload_phase = "transition"
+        initial_uploads_used = INITIAL_FREE_UPLOADS
+        extended_uploads_used = 0
+        remaining_in_phase = (
+            EXTENDED_FREE_UPLOADS if current_user.accepted_extended_trial else 0
+        )
+        total_remaining = (
+            EXTENDED_FREE_UPLOADS if current_user.accepted_extended_trial else 0
+        )
+        at_limit = not current_user.accepted_extended_trial
+        needs_extended_offer = not current_user.accepted_extended_trial
+        message = (
+            "🎉 Free trial complete! Ready for 20 additional uploads?"
+            if not current_user.accepted_extended_trial
+            else f"🚀 {remaining_in_phase} extended uploads remaining"
+        )
 
     elif free_uploads < TOTAL_FREE_UPLOADS:
         # Phase 2: Extended trial (uploads 11-30)
@@ -669,8 +712,8 @@ async def get_user_upload_status(
             "free_uploads_used": free_uploads,
             "remaining_free_uploads": remaining_uploads,
             "max_free_uploads": TOTAL_FREE_UPLOADS,
-            "at_limit": free_uploads >= TOTAL_FREE_UPLOADS,
-            "has_premium_subscription": has_subscription,
+            "at_limit": at_limit,
+            "has_premium_subscription": False,  # This is a free user
         },
         # Extended trial tracking
         "extended_trial_info": {
@@ -688,11 +731,7 @@ async def get_user_upload_status(
         "at_limit": at_limit,
         "needs_extended_offer": needs_extended_offer,
         "accepted_extended_trial": current_user.accepted_extended_trial,
-        "status": (
-            "premium"
-            if has_subscription
-            else ("available" if remaining_uploads > 0 else "limit_reached")
-        ),
+        "status": ("available" if remaining_uploads > 0 else "limit_reached"),
         "message": message,
         "authenticated": True,
     }
