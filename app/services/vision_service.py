@@ -540,187 +540,283 @@ class CEBrokerMappings:
 
 
 class EnhancedVisionService:
-    """Enhanced vision service with CE Broker field extraction"""
+    """Enhanced vision service with improved CE Broker field extraction"""
 
     def __init__(self):
         self.confidence_threshold = 0.7
         self.subject_detector = SubjectAreaDetector()
 
     def extract_ce_broker_fields(self, raw_text: str, parsed_data: Dict) -> Dict:
-        """Extract CE Broker specific fields from certificate text"""
+        """Extract CE Broker specific fields from certificate text - IMPROVED VERSION"""
 
-        # Get basic extracted data
-        course_title = parsed_data.get("course_title", "")
-        field_of_study = parsed_data.get("field_of_study", "")
-        instructional_method = self.extract_instructional_method(raw_text)
+        logger.info("Starting CE Broker field extraction...")
 
-        # Auto-detect CE Broker fields
-        subject_areas = self.subject_detector.detect_subject_areas(
-            course_title, parsed_data.get("provider", ""), raw_text, field_of_study
+        try:
+            # Get basic extracted data
+            course_title = parsed_data.get("course_title", "") or ""
+            field_of_study = parsed_data.get("field_of_study", "") or ""
+
+            logger.info(f"Course title: '{course_title}'")
+            logger.info(f"Field of study: '{field_of_study}'")
+            logger.info(f"Raw text available: {bool(raw_text)}")
+
+            # Extract instructional method first
+            instructional_method = self.extract_instructional_method(raw_text)
+            logger.info(f"Extracted instructional_method: '{instructional_method}'")
+
+            # Auto-detect CE Broker fields with improved logging
+            subject_areas = self.subject_detector.detect_subject_areas(
+                course_title, parsed_data.get("provider", ""), raw_text, field_of_study
+            )
+            logger.info(f"Detected subject_areas: {subject_areas}")
+
+            # IMPROVED: Better course type detection with fallbacks
+            course_type = self._detect_course_type_with_fallbacks(
+                raw_text, instructional_method, course_title
+            )
+            logger.info(f"Detected course_type: '{course_type}'")
+
+            # IMPROVED: Better delivery method detection
+            delivery_method = self._detect_delivery_method_with_fallbacks(
+                course_type, instructional_method, raw_text, course_title
+            )
+            logger.info(f"Detected delivery_method: '{delivery_method}'")
+
+            # Extract additional fields
+            nasba_sponsor = self.extract_nasba_sponsor(raw_text)
+            course_code = self.extract_course_code(raw_text)
+            program_level = self.extract_program_level(raw_text)
+
+            logger.info(
+                f"Additional fields - NASBA: {nasba_sponsor}, Code: {course_code}, Level: {program_level}"
+            )
+
+            # Ensure we have minimum required fields
+            if not course_type:
+                course_type = "anytime"  # Safe default
+                logger.warning("No course_type detected, using default: 'anytime'")
+
+            if not delivery_method:
+                delivery_method = (
+                    "Computer-Based Training (ie: online courses)"  # Safe default
+                )
+                logger.warning("No delivery_method detected, using default")
+
+            if not subject_areas or len(subject_areas) == 0:
+                subject_areas = [
+                    "Specialized knowledge and its application"
+                ]  # Safe default
+                logger.warning("No subject_areas detected, using default")
+
+            result = {
+                "course_type": course_type,
+                "delivery_method": delivery_method,
+                "instructional_method": instructional_method,
+                "subject_areas": subject_areas,
+                "nasba_sponsor_number": nasba_sponsor,
+                "course_code": course_code,
+                "program_level": program_level,
+                "ce_category": self.determine_ce_category(subject_areas, course_title),
+                "ce_broker_ready": self.check_ce_broker_readiness(
+                    parsed_data,
+                    {
+                        "course_type": course_type,
+                        "delivery_method": delivery_method,
+                        "subject_areas": subject_areas,
+                    },
+                ),
+            }
+
+            logger.info(f"Final CE Broker fields: {result}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in CE Broker field extraction: {str(e)}")
+            logger.exception("Full traceback:")
+
+            # Return safe defaults
+            return {
+                "course_type": "anytime",
+                "delivery_method": "Computer-Based Training (ie: online courses)",
+                "instructional_method": None,
+                "subject_areas": ["Specialized knowledge and its application"],
+                "nasba_sponsor_number": None,
+                "course_code": None,
+                "program_level": None,
+                "ce_category": "General CPE",
+                "ce_broker_ready": False,
+            }
+
+    def _detect_course_type_with_fallbacks(
+        self, raw_text: str, instructional_method: str, course_title: str
+    ) -> str:
+        """Improved course type detection with multiple fallback strategies"""
+
+        if not raw_text and not instructional_method and not course_title:
+            return "anytime"  # Default assumption
+
+        combined_text = f"{raw_text} {instructional_method} {course_title}".lower()
+
+        # Live indicators (more comprehensive)
+        live_indicators = [
+            "live",
+            "webinar",
+            "classroom",
+            "instructor-led",
+            "seminar",
+            "workshop",
+            "conference",
+            "presentation",
+            "lecture",
+            "group study",
+            "in-person",
+            "face-to-face",
+            "interactive",
+            "real-time",
+            "scheduled",
+            "session",
+        ]
+
+        # Anytime indicators (more comprehensive)
+        anytime_indicators = [
+            "self-study",
+            "online",
+            "computer-based",
+            "self-paced",
+            "on-demand",
+            "qas",
+            "individual study",
+            "correspondence",
+            "digital",
+            "e-learning",
+            "video",
+            "recorded",
+            "tutorial",
+            "course materials",
+            "study guide",
+        ]
+
+        live_score = sum(
+            1 for indicator in live_indicators if indicator in combined_text
+        )
+        anytime_score = sum(
+            1 for indicator in anytime_indicators if indicator in combined_text
         )
 
-        course_type = CEBrokerMappings.detect_course_type(
-            raw_text, instructional_method
+        logger.info(
+            f"Course type scoring - Live: {live_score}, Anytime: {anytime_score}"
         )
 
-        delivery_method = CEBrokerMappings.detect_delivery_method(
-            course_type, instructional_method, raw_text
-        )
+        if live_score > anytime_score:
+            return "live"
+        else:
+            return "anytime"  # Default to anytime
 
-        # Extract additional fields
-        nasba_sponsor = self.extract_nasba_sponsor(raw_text)
-        course_code = self.extract_course_code(raw_text)
-        program_level = self.extract_program_level(raw_text)
+    def _detect_delivery_method_with_fallbacks(
+        self,
+        course_type: str,
+        instructional_method: str,
+        raw_text: str,
+        course_title: str,
+    ) -> str:
+        """Improved delivery method detection with better pattern matching"""
 
-        return {
-            "course_type": course_type,
-            "delivery_method": delivery_method,
-            "instructional_method": instructional_method,
-            "subject_areas": subject_areas,
-            "nasba_sponsor_number": nasba_sponsor,
-            "course_code": course_code,
-            "program_level": program_level,
-            "ce_category": self.determine_ce_category(subject_areas, course_title),
-            "ce_broker_ready": self.check_ce_broker_readiness(
-                parsed_data,
-                {
-                    "course_type": course_type,
-                    "delivery_method": delivery_method,
-                    "subject_areas": subject_areas,
-                },
-            ),
-        }
+        combined_text = f"{instructional_method} {raw_text} {course_title}".lower()
 
-    def extract_instructional_method(self, raw_text: str) -> Optional[str]:
-        """Extract instructional method from certificate text"""
-        if not raw_text:
-            return None
-
-        # Common patterns for instructional methods
-        patterns = [
-            r"Instructional Method:\s*([^\n]+)",
-            r"Method:\s*([^\n]+)",
-            r"Delivery:\s*([^\n]+)",
-            r"Format:\s*([^\n]+)",
-            r"(QAS Self-Study)",
-            r"(Group Study)",
-            r"(Individual Study)",
-            r"(Self-Study)",
-            r"(Online)",
-            r"(Webinar)",
-            r"(Classroom)",
-            r"(Seminar)",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, raw_text, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-
-        return None
-
-    def extract_nasba_sponsor(self, raw_text: str) -> Optional[str]:
-        """Extract NASBA sponsor number from certificate"""
-        if not raw_text:
-            return None
-
-        # Patterns for NASBA sponsor numbers
-        patterns = [
-            r"NASBA\s*#?\s*(\d+)",
-            r"Sponsor\s*#?\s*(\d+)",
-            r"NASBA\s+Sponsor\s*#?\s*(\d+)",
-            r"Registry\s*#?\s*(\d+)",
-            r"#(\d{6})",  # 6-digit numbers often NASBA
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, raw_text, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-
-        return None
-
-    def extract_course_code(self, raw_text: str) -> Optional[str]:
-        """Extract course code from certificate"""
-        if not raw_text:
-            return None
-
-        patterns = [
-            r"Course Code:\s*([^\n]+)",
-            r"Code:\s*([A-Z0-9\-_]+)",
-            r"Course\s*#:\s*([^\n]+)",
-            r"Program Code:\s*([^\n]+)",
-            r"([A-Z]\d{3}-\d{4}-\d{2}-[A-Z]+)",  # Pattern like M290-2024-01-SSDL
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, raw_text, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-
-        return None
-
-    def extract_program_level(self, raw_text: str) -> Optional[str]:
-        """Extract program level (Basic, Intermediate, Advanced)"""
-        if not raw_text:
-            return None
-
-        patterns = [
-            r"Level:\s*(Basic|Intermediate|Advanced)",
-            r"Program Level:\s*(Basic|Intermediate|Advanced)",
-            r"\b(Basic|Intermediate|Advanced)\s+Level",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, raw_text, re.IGNORECASE)
-            if match:
-                return match.group(1).capitalize()
-
-        return None
-
-    def determine_ce_category(self, subject_areas: List[str], course_title: str) -> str:
-        """Determine CE category for CE Broker"""
-
-        # Check for ethics-related content
-        ethics_keywords = [
-            "ethics",
-            "professional responsibility",
-            "conduct",
-            "integrity",
-        ]
-        ethics_subjects = ["Administrative practices"]
-
-        course_title_lower = (course_title or "").lower()
-
-        # Check if this is an ethics course
-        if any(keyword in course_title_lower for keyword in ethics_keywords) or any(
-            subject in subject_areas for subject in ethics_subjects
+        # Computer-based training indicators (expanded)
+        if any(
+            indicator in combined_text
+            for indicator in [
+                "computer",
+                "online",
+                "internet",
+                "web-based",
+                "digital",
+                "software",
+                "app",
+                "platform",
+                "e-learning",
+                "virtual",
+                "portal",
+                "website",
+            ]
         ):
-            return "Professional Ethics CPE"
+            return "Computer-Based Training (ie: online courses)"
 
-        return "General CPE"  # Default
+        # Correspondence indicators (expanded)
+        elif any(
+            indicator in combined_text
+            for indicator in [
+                "correspondence",
+                "mail",
+                "written",
+                "reading",
+                "book",
+                "manual",
+                "text",
+                "study guide",
+                "materials",
+                "self-study",
+                "individual",
+            ]
+        ):
+            return "Correspondence"
+
+        # Prerecorded broadcast indicators (expanded)
+        elif any(
+            indicator in combined_text
+            for indicator in [
+                "recorded",
+                "video",
+                "broadcast",
+                "replay",
+                "playback",
+                "dvd",
+                "cd-rom",
+                "streaming",
+                "media",
+                "recording",
+            ]
+        ):
+            return "Prerecorded Broadcast"
+
+        # Default based on course type
+        else:
+            return "Computer-Based Training (ie: online courses)"  # Most common default
 
     def check_ce_broker_readiness(
         self, parsed_data: Dict, ce_broker_data: Dict
     ) -> bool:
-        """Check if record has all required fields for CE Broker export"""
-        required_fields = [
-            parsed_data.get("course_title"),
-            parsed_data.get("provider"),
-            parsed_data.get("completion_date"),
-            parsed_data.get("cpe_credits"),
-            ce_broker_data.get("course_type"),
-            ce_broker_data.get("delivery_method"),
-            ce_broker_data.get("subject_areas"),
+        """Check if record has all required fields for CE Broker export - IMPROVED"""
+
+        required_checks = [
+            ("course_title", parsed_data.get("course_title")),
+            ("provider", parsed_data.get("provider")),
+            ("completion_date", parsed_data.get("completion_date")),
+            ("cpe_credits", parsed_data.get("cpe_credits")),
+            ("course_type", ce_broker_data.get("course_type")),
+            ("delivery_method", ce_broker_data.get("delivery_method")),
+            ("subject_areas", ce_broker_data.get("subject_areas")),
         ]
 
-        return all(
-            field is not None and field != "" and field != []
-            for field in required_fields
-        )
+        missing_fields = []
+        for field_name, field_value in required_checks:
+            if field_value is None or field_value == "" or field_value == []:
+                missing_fields.append(field_name)
+
+        is_ready = len(missing_fields) == 0
+
+        if missing_fields:
+            logger.warning(f"CE Broker not ready. Missing fields: {missing_fields}")
+        else:
+            logger.info("CE Broker ready - all required fields present")
+
+        return is_ready
 
     def enhance_parsed_data(self, raw_text: str, basic_parsed_data: Dict) -> Dict:
-        """Main method to enhance basic parsed data with CE Broker fields"""
+        """Main method to enhance basic parsed data with CE Broker fields - IMPROVED"""
+
+        logger.info("Starting data enhancement...")
 
         # Extract CE Broker specific fields
         ce_broker_fields = self.extract_ce_broker_fields(raw_text, basic_parsed_data)
