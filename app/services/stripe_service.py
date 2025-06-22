@@ -241,8 +241,12 @@ class StripeService:
     def handle_successful_payment(self, checkout_session_id: str):
         """Handle successful payment from Stripe webhook"""
         try:
+            print(f"=== HANDLING SUCCESSFUL PAYMENT ===")
+            print(f"Checkout Session ID: {checkout_session_id}")
+
             # Retrieve the checkout session
             session = stripe.checkout.Session.retrieve(checkout_session_id)
+            print(f"Retrieved session: {session.id}")
 
             # Get the subscription
             subscription_id = session.subscription
@@ -250,11 +254,14 @@ class StripeService:
                 raise Exception("No subscription found in checkout session")
 
             stripe_subscription = stripe.Subscription.retrieve(subscription_id)
+            print(f"Retrieved subscription: {subscription_id}")
 
             # Extract metadata
             license_number = session.metadata.get("license_number")
             if not license_number:
                 raise Exception("No license number in session metadata")
+
+            print(f"License number from metadata: {license_number}")
 
             # Get or create user
             user = (
@@ -262,6 +269,7 @@ class StripeService:
                 .filter(User.license_number == license_number)
                 .first()
             )
+
             if not user:
                 # Create user if doesn't exist
                 cpa = (
@@ -281,19 +289,20 @@ class StripeService:
                     created_at=datetime.now(),
                 )
                 self.db.add(user)
-                self.db.flush()
+                self.db.flush()  # Get the user ID
+                print(f"Created new user: {user.id}")
+            else:
+                print(f"Found existing user: {user.id}")
 
-            # Create or update subscription record - FIXED field name
+            # Create or update subscription record
             existing_subscription = (
                 self.db.query(Subscription)
-                .filter(
-                    Subscription.license_number
-                    == license_number  # FIXED: correct field name
-                )
+                .filter(Subscription.license_number == license_number)
                 .first()
             )
 
             if existing_subscription:
+                print("Updating existing subscription")
                 # Update existing subscription
                 existing_subscription.stripe_subscription_id = subscription_id
                 existing_subscription.status = stripe_subscription.status
@@ -304,11 +313,13 @@ class StripeService:
                     stripe_subscription.current_period_end
                 )
                 existing_subscription.updated_at = datetime.now()
+                subscription_record = existing_subscription
             else:
+                print("Creating new subscription")
                 # Create new subscription
-                new_subscription = Subscription(
+                subscription_record = Subscription(
                     user_id=user.id,
-                    license_number=license_number,  # FIXED: correct field name
+                    license_number=license_number,
                     stripe_subscription_id=subscription_id,
                     stripe_customer_id=session.customer,
                     status=stripe_subscription.status,
@@ -321,41 +332,43 @@ class StripeService:
                     created_at=datetime.now(),
                     updated_at=datetime.now(),
                 )
-                self.db.add(new_subscription)
+                self.db.add(subscription_record)
 
             # Create payment record
             payment = Payment(
                 user_id=user.id,
-                cpa_license_number=license_number,  # This field exists in Payment model
+                cpa_license_number=license_number,
                 stripe_payment_intent_id=session.payment_intent,
                 stripe_subscription_id=subscription_id,
                 amount=session.amount_total / 100,  # Convert from cents
                 currency=session.currency,
                 status="completed",
                 payment_type="subscription",
-                product_type="cpe_management",
+                product_type="premium_subscription",
+                payment_date=datetime.now(),
                 created_at=datetime.now(),
             )
             self.db.add(payment)
 
-            # Mark CPA as premium
-            cpa = (
-                self.db.query(CPA).filter(CPA.license_number == license_number).first()
-            )
-            if cpa:
-                cpa.is_premium = True
+            # Flush changes but don't commit yet (webhook handler will commit)
+            self.db.flush()
 
-            self.db.commit()
+            print(f"Created payment record: ID {payment.id}")
+            print(f"Subscription status: {subscription_record.status}")
 
-            logger.info(
-                f"Successfully processed subscription for license {license_number}"
-            )
-            return True
+            return {
+                "success": True,
+                "user_id": user.id,
+                "subscription_id": subscription_record.id,
+                "payment_id": payment.id,
+            }
 
         except Exception as e:
-            logger.error(f"Error handling successful payment: {e}")
-            self.db.rollback()
-            raise e
+            print(f"Error in handle_successful_payment: {e}")
+            import traceback
+
+            traceback.print_exc()
+            raise
 
     def _get_plan_name_from_subscription(self, stripe_subscription):
         """Extract plan name from Stripe subscription"""

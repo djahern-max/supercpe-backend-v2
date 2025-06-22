@@ -104,9 +104,14 @@ async def get_subscription_status(license_number: str, db: Session = Depends(get
 
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    """Handle Stripe webhooks"""
+    """Handle Stripe webhooks with enhanced logging"""
     body = await request.body()
     sig_header = request.headers.get("stripe-signature")
+
+    # Log incoming webhook
+    print(f"=== WEBHOOK RECEIVED ===")
+    print(f"Headers: {dict(request.headers)}")
+    print(f"Body length: {len(body)}")
 
     try:
         # TEMP: Skip signature verification for testing
@@ -114,7 +119,9 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
         event = json.loads(body.decode("utf-8"))
 
-        print(f"Received webhook event: {event.get('type')}")
+        print(f"Event Type: {event.get('type')}")
+        print(f"Event ID: {event.get('id')}")
+        print(f"Event Data Keys: {list(event.get('data', {}).keys())}")
 
     except ValueError as e:
         print(f"Invalid JSON payload: {e}")
@@ -123,16 +130,37 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     # Handle the event
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        print(f"Processing checkout session: {session['id']}")
+        print(f"=== PROCESSING CHECKOUT SESSION ===")
+        print(f"Session ID: {session['id']}")
+        print(f"Customer: {session.get('customer')}")
+        print(f"Subscription: {session.get('subscription')}")
+        print(f"Metadata: {session.get('metadata', {})}")
+        print(f"Customer Details: {session.get('customer_details', {})}")
 
         # Process the successful payment
         stripe_service = StripeService(db)
         try:
-            stripe_service.handle_successful_payment(session["id"])
-            print("Successfully processed payment!")
+            result = stripe_service.handle_successful_payment(session["id"])
+            print(f"Payment processing result: {result}")
+            print("=== PAYMENT PROCESSED SUCCESSFULLY ===")
+
+            # IMPORTANT: Commit the transaction
+            db.commit()
+            print("Database transaction committed")
+
         except Exception as e:
-            print(f"Error processing payment: {e}")
-            raise
+            print(f"=== PAYMENT PROCESSING ERROR ===")
+            print(f"Error: {e}")
+            print(f"Error type: {type(e)}")
+            import traceback
+
+            traceback.print_exc()
+
+            # Rollback transaction on error
+            db.rollback()
+            raise HTTPException(
+                status_code=500, detail=f"Payment processing error: {str(e)}"
+            )
 
     elif event["type"] == "invoice.payment_succeeded":
         invoice = event["data"]["object"]
@@ -305,3 +333,22 @@ async def create_subscription_authenticated(
         "plan": plan,
         "existing_user": True,
     }
+
+
+@router.post("/test-webhook")
+async def test_webhook_processing(
+    data: dict = Body(...), db: Session = Depends(get_db)
+):
+    """Manual endpoint to test webhook processing with a session ID"""
+    session_id = data.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+
+    stripe_service = StripeService(db)
+    try:
+        result = stripe_service.handle_successful_payment(session_id)
+        db.commit()
+        return {"success": True, "result": result}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
