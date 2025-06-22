@@ -32,6 +32,10 @@ from app.services.cpa_import import CPAImportService
 from app.services.document_storage import DocumentStorageService
 from app.services.stripe_service import StripeService
 from app.services.vision_service import EnhancedVisionService
+from app.services.upload_service import (
+    create_cpe_record_from_parsing,
+    create_enhanced_cpe_record_from_parsing,
+)
 
 # Model imports
 from app.models.cpa import CPA
@@ -405,27 +409,39 @@ async def upload_certificate_authenticated(
     try:
         logger.info(f"Starting authenticated upload for license {license_number}")
 
-        # Process the file upload (existing logic)
-        # ... [Your existing file upload logic here] ...
+        # Validate file first
+        validate_file(file)
+
+        # Step 1: Upload file to storage (ADD THIS - it was missing!)
+        storage_service = DocumentStorageService()
+        upload_result = await storage_service.upload_cpe_certificate(
+            file, license_number
+        )
+
+        if not upload_result.get("success"):
+            raise HTTPException(status_code=500, detail=upload_result.get("error"))
 
         # CRITICAL: After parsing, ensure we use the enhanced creation function
         if parse_with_ai:
             # Get your parsing result from your vision service
-            parsing_result = await your_vision_parsing_function(
-                file
-            )  # Replace with your actual function
+            parsing_result = await process_with_ai(file, license_number)
 
             # DEBUG: Log what we got from parsing
             logger.info(f"Parsing result keys: {list(parsing_result.keys())}")
             logger.info(f"Raw text available: {bool(parsing_result.get('raw_text'))}")
 
             # FIXED: Use the enhanced creation function
+            storage_tier = (
+                "premium"  # Set storage tier for premium uploads (REMOVE DUPLICATE)
+            )
+
+            # Step 3: Create CPE record with premium tier
             cpe_record = create_enhanced_cpe_record_from_parsing(
                 parsing_result,
                 file,
                 license_number,
                 current_user,
-                upload_result,
+                upload_result,  # Now this exists from Step 1 above
                 storage_tier,
             )
 
@@ -520,8 +536,33 @@ async def upload_certificate_authenticated(
         else:
             # Non-AI parsing fallback
             logger.warning("AI parsing disabled, creating basic record")
+
+            # Create mock upload result for non-AI path
+            upload_result = {
+                "success": True,
+                "file_key": file.filename,
+                "filename": file.filename,
+            }
+
             # Create basic record without AI enhancement
-            # ... [Your existing non-AI logic] ...
+            cpe_record = create_enhanced_cpe_record_from_parsing(
+                {"parsed_data": {}, "raw_text": ""},  # Empty parsing result
+                file,
+                license_number,
+                current_user,
+                upload_result,
+                "premium",
+            )
+
+            db.add(cpe_record)
+            db.commit()
+            db.refresh(cpe_record)
+
+            return {
+                "success": True,
+                "message": "Certificate uploaded (manual entry required)",
+                "record_id": cpe_record.id,
+            }
 
     except Exception as e:
         logger.error(f"Error in authenticated upload: {str(e)}")
