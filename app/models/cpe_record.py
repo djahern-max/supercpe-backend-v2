@@ -277,3 +277,29 @@ class CEBrokerMappings:
             return "Prerecorded Broadcast"
         else:
             return "Computer-Based Training (ie: online courses)"
+
+
+class CPEUploadSession(Base):
+    __tablename__ = "cpe_upload_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cpa_license_number = Column(String(20), nullable=False, index=True)
+
+    # Payment tracking
+    payment_id = Column(Integer, ForeignKey("payments.id"), nullable=True)
+    session_type = Column(String(50), nullable=False)
+
+    # Processing status
+    status = Column(String(50), default="pending")
+    documents_uploaded = Column(Integer, default=0)
+    documents_processed = Column(Integer, default=0)
+    total_credits_found = Column(Float, default=0.0)
+
+    # Timestamps
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self):
+        return (
+            f"<CPEUploadSession(cpa={self.cpa_license_number}, status={self.status})>"
+        )
