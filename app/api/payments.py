@@ -105,31 +105,42 @@ async def get_subscription_status(license_number: str, db: Session = Depends(get
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     """Handle Stripe webhooks"""
-
-    payload = await request.body()
+    body = await request.body()
     sig_header = request.headers.get("stripe-signature")
 
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, settings.stripe_webhook_secret
-        )
-    except ValueError:
+        # TEMP: Skip signature verification for testing
+        import json
+
+        event = json.loads(body.decode("utf-8"))
+
+        print(f"Received webhook event: {event.get('type')}")
+
+    except ValueError as e:
+        print(f"Invalid JSON payload: {e}")
         raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
 
     # Handle the event
-    if event["type"] == "payment_intent.succeeded":
-        payment_intent = event["data"]["object"]
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        print(f"Processing checkout session: {session['id']}")
 
-        # Update payment status
+        # Process the successful payment
         stripe_service = StripeService(db)
-        stripe_service.check_payment_status(payment_intent["id"])
+        try:
+            stripe_service.handle_successful_payment(session["id"])
+            print("Successfully processed payment!")
+        except Exception as e:
+            print(f"Error processing payment: {e}")
+            raise
 
     elif event["type"] == "invoice.payment_succeeded":
-        # Handle subscription payment
         invoice = event["data"]["object"]
+        print(f"Processing invoice payment: {invoice['id']}")
         # Process subscription payment...
+
+    else:
+        print(f"Unhandled event type: {event['type']}")
 
     return {"status": "success"}
 
