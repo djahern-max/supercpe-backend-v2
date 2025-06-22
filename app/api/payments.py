@@ -11,6 +11,7 @@ import stripe
 from app.core.config import settings
 from app.models.user import User
 from datetime import datetime
+from app.services.jwt_service import get_current_user
 
 
 router = APIRouter(prefix="/api/payments", tags=["Payments"])
@@ -208,6 +209,76 @@ async def create_account_for_payment(
     return {
         "success": True,
         "message": "Account created successfully",
+        "redirect_url": checkout_session.url,
+        "session_id": checkout_session.id,
+        "plan": plan,
+    }
+
+
+@router.post("/create-subscription-authenticated")
+async def create_subscription_authenticated(
+    data: dict = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create subscription for already authenticated user"""
+
+    # Extract data
+    license_number = data.get("license_number")
+    plan = data.get("plan", "annual")  # Default to annual if not specified
+
+    if not license_number:
+        raise HTTPException(status_code=400, detail="License number is required")
+
+    # Verify user owns this license
+    if current_user.license_number != license_number:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only create subscriptions for your own license number",
+        )
+
+    # Verify CPA exists
+    cpa = db.query(CPA).filter(CPA.license_number == license_number).first()
+    if not cpa:
+        raise HTTPException(
+            status_code=404, detail="CPA license number not found in NH database"
+        )
+
+    # Define product details based on plan
+    if plan == "monthly":
+        price_id = settings.stripe_price_id_monthly
+        product_name = "SuperCPE Professional Monthly"
+        unit_amount = 1000  # $10.00 in cents
+        recurring = {"interval": "month"}
+    else:  # Annual plan
+        price_id = settings.stripe_price_id_annual
+        product_name = "SuperCPE Professional Annual"
+        unit_amount = 9600  # $96.00 in cents
+        recurring = {"interval": "year"}
+
+    # Create Stripe checkout session using existing user data
+    stripe_service = StripeService(db)
+    checkout_session = stripe_service.create_checkout_session(
+        customer_email=current_user.email,
+        license_number=license_number,
+        price_id=price_id,  # If you have price IDs configured in Stripe
+        product_name=product_name,
+        unit_amount=unit_amount,
+        recurring=recurring,
+        success_url=f"{settings.frontend_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{settings.frontend_url}/dashboard/{license_number}?payment_cancelled=true",
+        metadata={
+            "license_number": license_number,
+            "plan_type": plan,
+            "user_id": current_user.id,
+            "authenticated_user": True,
+        },
+    )
+
+    # Return success with redirect URL to Stripe
+    return {
+        "success": True,
+        "message": "Subscription created successfully",
         "redirect_url": checkout_session.url,
         "session_id": checkout_session.id,
         "plan": plan,
