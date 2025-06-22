@@ -192,7 +192,6 @@ class StripeService:
                 # Allow promotion codes for discounts
                 allow_promotion_codes=True,
                 # Automatically collect tax if applicable
-                automatic_tax={"enabled": True},
             )
 
             return checkout_session
