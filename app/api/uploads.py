@@ -484,15 +484,35 @@ async def accept_extended_trial(
     if existing_uploads != INITIAL_FREE_UPLOADS:
         raise HTTPException(status_code=400, detail="Not eligible for extended trial")
 
-    # Create extended trial record or flag
-    # (You could add this to user table or create separate table)
+    # Check if user has already accepted extended trial
+    if current_user.accepted_extended_trial:
+        raise HTTPException(status_code=400, detail="Extended trial already accepted")
 
-    return {
-        "success": True,
-        "message": "Extended trial activated!",
-        "new_upload_limit": TOTAL_FREE_UPLOADS,
-        "additional_uploads": EXTENDED_FREE_UPLOADS,
-    }
+    try:
+        # Update user record to mark extended trial as accepted
+        current_user.accepted_extended_trial = True
+        current_user.extended_trial_accepted_at = datetime.now()
+        current_user.updated_at = datetime.now()
+
+        # Commit the changes
+        db.commit()
+        db.refresh(current_user)
+
+        return {
+            "success": True,
+            "message": "Extended trial activated! You now have 20 additional uploads.",
+            "user": {
+                "accepted_extended_trial": current_user.accepted_extended_trial,
+                "extended_trial_accepted_at": current_user.extended_trial_accepted_at,
+            },
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error accepting extended trial: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to activate extended trial: {str(e)}"
+        )
 
 
 @router.get("/user-upload-status/{license_number}")
@@ -501,7 +521,7 @@ async def get_user_upload_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Get authenticated user's upload status"""
+    """Get authenticated user's upload status with extended trial tracking"""
 
     # Verify user owns this license
     if current_user.license_number != license_number:
@@ -540,7 +560,64 @@ async def get_user_upload_status(
     stripe_service = StripeService(db)
     has_subscription = stripe_service.has_active_subscription(license_number)
 
-    remaining_uploads = max(0, MAX_FREE_UPLOADS - free_uploads)
+    # Calculate phase-based status (similar to free-tier-status but for authenticated user)
+    if free_uploads < INITIAL_FREE_UPLOADS:
+        # Phase 1: Initial free trial (uploads 1-10)
+        upload_phase = "initial"
+        initial_uploads_used = free_uploads
+        extended_uploads_used = 0
+        remaining_in_phase = INITIAL_FREE_UPLOADS - free_uploads
+        total_remaining = TOTAL_FREE_UPLOADS - free_uploads
+        at_limit = False
+        needs_extended_offer = False
+        message = f"✅ {remaining_in_phase} uploads remaining in your free trial"
+
+    elif free_uploads == INITIAL_FREE_UPLOADS:
+        # Phase transition: Check if user has accepted extended trial
+        if current_user.accepted_extended_trial:
+            # User accepted, they're in extended phase
+            upload_phase = "extended"
+            initial_uploads_used = INITIAL_FREE_UPLOADS
+            extended_uploads_used = 0
+            remaining_in_phase = EXTENDED_FREE_UPLOADS
+            total_remaining = EXTENDED_FREE_UPLOADS
+            at_limit = False
+            needs_extended_offer = False
+            message = f"🚀 {remaining_in_phase} extended uploads remaining"
+        else:
+            # Show extended offer
+            upload_phase = "transition"
+            initial_uploads_used = INITIAL_FREE_UPLOADS
+            extended_uploads_used = 0
+            remaining_in_phase = EXTENDED_FREE_UPLOADS
+            total_remaining = EXTENDED_FREE_UPLOADS
+            at_limit = False
+            needs_extended_offer = True
+            message = "🎉 Free trial complete! Ready for 20 additional uploads?"
+
+    elif free_uploads < TOTAL_FREE_UPLOADS:
+        # Phase 2: Extended trial (uploads 11-30)
+        upload_phase = "extended"
+        initial_uploads_used = INITIAL_FREE_UPLOADS
+        extended_uploads_used = free_uploads - INITIAL_FREE_UPLOADS
+        remaining_in_phase = TOTAL_FREE_UPLOADS - free_uploads
+        total_remaining = TOTAL_FREE_UPLOADS - free_uploads
+        at_limit = False
+        needs_extended_offer = False
+        message = f"🚀 {remaining_in_phase} extended uploads remaining"
+
+    else:
+        # Phase 3: Limit reached (30+ uploads)
+        upload_phase = "limit_reached"
+        initial_uploads_used = INITIAL_FREE_UPLOADS
+        extended_uploads_used = EXTENDED_FREE_UPLOADS
+        remaining_in_phase = 0
+        total_remaining = 0
+        at_limit = True
+        needs_extended_offer = False
+        message = "🎯 Ready to upgrade? You've experienced everything SuperCPE offers!"
+
+    remaining_uploads = max(0, TOTAL_FREE_UPLOADS - free_uploads)
 
     return {
         "user": {
@@ -554,15 +631,32 @@ async def get_user_upload_status(
             "total_uploads": user_uploads,
             "free_uploads_used": free_uploads,
             "remaining_free_uploads": remaining_uploads,
-            "max_free_uploads": MAX_FREE_UPLOADS,
-            "at_limit": free_uploads >= MAX_FREE_UPLOADS,
+            "max_free_uploads": TOTAL_FREE_UPLOADS,
+            "at_limit": free_uploads >= TOTAL_FREE_UPLOADS,
             "has_premium_subscription": has_subscription,
         },
+        # Extended trial tracking
+        "extended_trial_info": {
+            "accepted_extended_trial": current_user.accepted_extended_trial,
+            "extended_trial_accepted_at": current_user.extended_trial_accepted_at,
+        },
+        # Phase tracking (matches free-tier-status response)
+        "upload_phase": upload_phase,
+        "initial_uploads_used": initial_uploads_used,
+        "extended_uploads_used": extended_uploads_used,
+        "total_uploads_used": free_uploads,
+        "remaining_in_phase": remaining_in_phase,
+        "total_remaining": total_remaining,
+        # Status flags
+        "at_limit": at_limit,
+        "needs_extended_offer": needs_extended_offer,
+        "accepted_extended_trial": current_user.accepted_extended_trial,
         "status": (
             "premium"
             if has_subscription
             else ("available" if remaining_uploads > 0 else "limit_reached")
         ),
+        "message": message,
         "authenticated": True,
     }
 
