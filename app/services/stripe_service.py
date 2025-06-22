@@ -142,8 +142,8 @@ class StripeService:
             customer = self._get_or_create_customer(customer_email, license_number)
 
             # Prepare line items
-            if price_id:
-                # Use existing Stripe price
+            if price_id and price_id.startswith("price_"):
+                # Use existing Stripe price (now with real Price IDs)
                 line_items = [
                     {
                         "price": price_id,
@@ -151,7 +151,7 @@ class StripeService:
                     }
                 ]
             else:
-                # Create price on the fly
+                # Fallback to dynamic pricing if no valid price_id
                 line_items = [
                     {
                         "price_data": {
