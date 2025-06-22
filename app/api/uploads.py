@@ -1067,6 +1067,9 @@ async def upload_cpe_certificate_premium(
         # Step 2: Process with AI
         parsing_result = await process_with_ai(file, license_number)
 
+        # Step 2.5: DEFINE STORAGE_TIER (ADD THIS LINE!)
+        storage_tier = "premium"  # Define storage_tier before using it
+
         # Step 3: Create CPE record with premium tier
         cpe_record = create_enhanced_cpe_record_from_parsing(
             parsing_result,
@@ -1074,7 +1077,7 @@ async def upload_cpe_certificate_premium(
             license_number,
             current_user,
             upload_result,
-            storage_tier,
+            storage_tier,  # Now this variable exists
         )
 
         db.add(cpe_record)
