@@ -334,10 +334,9 @@ class StripeService:
                 )
                 self.db.add(subscription_record)
 
-            # Create payment record
+            # Create payment record - FIXED: Remove user_id field
             payment = Payment(
-                user_id=user.id,
-                cpa_license_number=license_number,
+                cpa_license_number=license_number,  # This field exists
                 stripe_payment_intent_id=session.payment_intent,
                 stripe_subscription_id=subscription_id,
                 amount=session.amount_total / 100,  # Convert from cents

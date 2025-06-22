@@ -347,7 +347,7 @@ async def test_webhook_processing(
     stripe_service = StripeService(db)
     try:
         result = stripe_service.handle_successful_payment(session_id)
-        db.commit()
+        db.commit()  # Important: commit the transaction
         return {"success": True, "result": result}
     except Exception as e:
         db.rollback()
