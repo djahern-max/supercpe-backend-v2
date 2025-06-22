@@ -138,7 +138,7 @@ def create_enhanced_cpe_record_from_parsing(
     upload_result: dict,
     storage_tier: str = "free",
 ):
-    """Enhanced version that adds CE Broker fields"""
+    """Enhanced version that adds CE Broker fields - FIXED VERSION"""
 
     from datetime import datetime
 
@@ -196,7 +196,9 @@ def create_enhanced_cpe_record_from_parsing(
             # Your existing fields
             cpa_license_number=license_number,
             user_id=current_user.id if current_user else None,
-            document_filename=upload_result.get("filename", file.filename),
+            document_filename=upload_result.get(
+                "filename", file.filename
+            ),  # FIXED: use "filename" key
             original_filename=file.filename,
             cpe_credits=float(enhanced_data.get("cpe_credits", 0.0)),
             ethics_credits=float(enhanced_data.get("ethics_credits", 0.0)),
@@ -239,6 +241,7 @@ def create_enhanced_cpe_record_from_parsing(
 
     except Exception as e:
         logger.error(f"Enhancement failed, falling back to basic record: {str(e)}")
+        logger.exception("Full traceback:")
 
         # Fallback to your existing function
         return create_cpe_record_from_parsing(
@@ -418,12 +421,12 @@ async def upload_certificate_authenticated(
 
             # FIXED: Use the enhanced creation function
             cpe_record = create_enhanced_cpe_record_from_parsing(
-                parsing_result=parsing_result,
-                file=file,
-                license_number=license_number,
-                current_user=current_user,
-                upload_result=upload_result,  # Your S3 upload result
-                storage_tier="authenticated",
+                parsing_result,
+                file,
+                license_number,
+                current_user,
+                upload_result,
+                storage_tier,
             )
 
             # CRITICAL: Save to database
