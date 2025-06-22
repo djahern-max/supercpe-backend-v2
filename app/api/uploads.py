@@ -33,7 +33,6 @@ from app.services.document_storage import DocumentStorageService
 from app.services.stripe_service import StripeService
 from app.services.vision_service import EnhancedVisionService
 from app.services.upload_service import (
-    create_cpe_record_from_parsing,
     create_enhanced_cpe_record_from_parsing,
 )
 
@@ -229,17 +228,38 @@ def create_enhanced_cpe_record_from_parsing(
         return cpe_record
 
     except Exception as e:
-        logger.error(f"Enhancement failed, falling back to basic record: {str(e)}")
+        logger.error(f"Enhancement failed, creating basic record: {str(e)}")
         logger.exception("Full traceback:")
 
-        # Fallback to your existing function
-        return create_cpe_record_from_parsing(
-            parsing_result,
-            file,
-            license_number,
-            current_user,
-            upload_result,
-            storage_tier,
+        # Create basic CPE record without enhancement
+        from app.models.cpe_record import CPERecord
+
+        return CPERecord(
+            cpa_license_number=license_number,
+            user_id=current_user.id if current_user else None,
+            document_filename=upload_result.get("file_key", file.filename),
+            original_filename=file.filename,
+            cpe_credits=parsing_result.get("parsed_data", {})
+            .get("cpe_credits", {})
+            .get("value", 0.0),
+            ethics_credits=parsing_result.get("parsed_data", {})
+            .get("ethics_credits", {})
+            .get("value", 0.0),
+            course_title=parsing_result.get("parsed_data", {})
+            .get("course_title", {})
+            .get("value"),
+            provider=parsing_result.get("parsed_data", {})
+            .get("provider", {})
+            .get("value"),
+            completion_date=parsing_result.get("parsed_data", {})
+            .get("completion_date", {})
+            .get("value"),
+            certificate_number=parsing_result.get("parsed_data", {})
+            .get("certificate_number", {})
+            .get("value"),
+            raw_text=parsing_result.get("raw_text", ""),
+            storage_tier=storage_tier,
+            created_at=datetime.now(),
         )
 
 
