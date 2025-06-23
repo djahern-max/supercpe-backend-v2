@@ -80,32 +80,32 @@ def validate_file(file: UploadFile):
 
 
 async def process_with_ai(file: UploadFile, license_number: str):
-    """AI processing using enhanced vision service"""
+    """AI processing using Google Vision API"""
     try:
-        # For now, return a structured result that works with your existing flow
-        # You'll need to implement actual AI processing here
+        from app.services.vision_service import EnhancedVisionService
 
-        # Read file content for future AI processing
+        vision_service = EnhancedVisionService()
+
+        # Read file content
         await file.seek(0)
         content = await file.read()
-        await file.seek(0)  # Reset for any future reads
 
-        # Return structured result (you can enhance this with real AI later)
+        # Extract text using Google Vision API
+        raw_text = await vision_service.extract_text_from_pdf(content)
+
+        # Parse CPE data
+        parsed_data = vision_service.parse_cpe_certificate(raw_text)
+
         return {
             "success": True,
-            "parsed_data": {
-                "course_title": "Extracted Course Title",  # Replace with actual extraction
-                "provider": "Extracted Provider",  # Replace with actual extraction
-                "cpe_credits": 0.0,  # Replace with actual extraction
-                "completion_date": datetime.now().date().isoformat(),
-            },
-            "confidence_score": 0.5,
-            "parsing_method": "enhanced_vision",
-            "raw_text": "Actual extracted text would go here",  # Replace with actual extraction
+            "parsed_data": parsed_data,
+            "raw_text": raw_text,
+            "confidence_score": 0.8,
+            "parsing_method": "google_vision",
         }
 
     except Exception as e:
-        logger.error(f"AI processing failed: {e}")
+        logger.error(f"Vision API processing failed: {e}")
         raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
 
 

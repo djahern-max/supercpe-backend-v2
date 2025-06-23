@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional
 import logging
+from google.cloud import vision
 
 logger = logging.getLogger(__name__)
 
@@ -540,11 +541,78 @@ class CEBrokerMappings:
 
 
 class EnhancedVisionService:
-    """Enhanced vision service with improved CE Broker field extraction"""
-
     def __init__(self):
         self.confidence_threshold = 0.7
         self.subject_detector = SubjectAreaDetector()
+        # ADD THIS:
+        self.vision_client = vision.ImageAnnotatorClient()
+
+    # ADD THIS METHOD:
+    async def extract_text_from_pdf(self, file_content: bytes) -> str:
+        """Extract text from PDF using Google Vision API"""
+        try:
+            # Convert PDF to images and extract text
+            document = vision.Document(content=file_content)
+            request = vision.AnnotateFileRequest(
+                features=[
+                    vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
+                ],
+                input_config=vision.InputConfig(
+                    content=file_content, mime_type="application/pdf"
+                ),
+            )
+
+            response = self.vision_client.batch_annotate_files(requests=[request])
+
+            # Extract text from all pages
+            full_text = ""
+            for page in response.responses[0].responses:
+                if page.full_text_annotation:
+                    full_text += page.full_text_annotation.text + "\n"
+
+            return full_text
+
+        except Exception as e:
+            logger.error(f"Google Vision API error: {str(e)}")
+            raise
+
+    # ADD THIS METHOD:
+    def parse_cpe_certificate(self, raw_text: str) -> Dict:
+        """Parse CPE certificate data from extracted text"""
+        import re
+
+        patterns = {
+            "course_title": r"(?:course|program|title):?\s*([A-Za-z0-9\s\-:&]{10,100})",
+            "provider": r"(?:provider|sponsor|issued by):?\s*([A-Za-z0-9\s&.,\-]{5,50})",
+            "completion_date": r"(?:completed|date):?\s*(\w+\s+\d{1,2},?\s+\d{4})",
+            "cpe_credits": r"(\d+(?:\.\d+)?)\s*(?:cpe|credits?|hours?)",
+            "field_of_study": r"(?:field|subject|area):?\s*([A-Za-z\s]{3,30})",
+        }
+
+        parsed = {}
+        for field, pattern in patterns.items():
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                parsed[field] = match.group(1).strip()
+
+        return parsed
+
+    def extract_instructional_method(self, raw_text: str) -> Optional[str]:
+        """Extract instructional method from raw text"""
+        if not raw_text:
+            return None
+
+        patterns = [
+            r"instructional method:?\s*([a-zA-Z\s\-]+)",
+            r"method:?\s*([a-zA-Z\s\-]+)",
+            r"delivery:?\s*([a-zA-Z\s\-]+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return None
 
     def extract_ce_broker_fields(self, raw_text: str, parsed_data: Dict) -> Dict:
         """Extract CE Broker specific fields from certificate text - IMPROVED VERSION"""
@@ -646,6 +714,71 @@ class EnhancedVisionService:
                 "ce_category": "General CPE",
                 "ce_broker_ready": False,
             }
+
+    def extract_nasba_sponsor(self, raw_text: str) -> Optional[str]:
+        """Extract NASBA sponsor number from raw text"""
+        if not raw_text:
+            return None
+
+        patterns = [
+            r"nasba[:\s]*([0-9]+)",
+            r"sponsor[:\s]*([0-9]+)",
+            r"tx sponsor[:\s]*([0-9]+)",
+            r"ny sponsor[:\s]*([0-9]+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return None
+
+    def extract_course_code(self, raw_text: str) -> Optional[str]:
+        """Extract course code from raw text"""
+        if not raw_text:
+            return None
+
+        patterns = [
+            r"course code:?\s*([A-Z0-9\-]+)",
+            r"code:?\s*([A-Z0-9\-]+)",
+            r"program code:?\s*([A-Z0-9\-]+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return None
+
+    def extract_program_level(self, raw_text: str) -> Optional[str]:
+        """Extract program level from raw text"""
+        if not raw_text:
+            return None
+
+        levels = ["basic", "intermediate", "advanced", "overview", "update"]
+        raw_lower = raw_text.lower()
+
+        for level in levels:
+            if level in raw_lower:
+                return level.title()
+        return None
+
+    def determine_ce_category(self, subject_areas: List[str], course_title: str) -> str:
+        """Determine CE category based on subject areas and course title"""
+        if not subject_areas:
+            return "General CPE"
+
+        # Check for ethics-related subjects
+        ethics_subjects = ["Administrative practices"]
+        if any(subj in subject_areas for subj in ethics_subjects):
+            return "Ethics CPE"
+
+        # Check for specialized subjects
+        specialized_subjects = ["Taxes", "Public accounting", "Governmental accounting"]
+        if any(subj in subject_areas for subj in specialized_subjects):
+            return "Technical CPE"
+
+        return "General CPE"
 
     def _detect_course_type_with_fallbacks(
         self, raw_text: str, instructional_method: str, course_title: str
