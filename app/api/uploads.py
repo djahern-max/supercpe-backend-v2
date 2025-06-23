@@ -178,6 +178,21 @@ def create_cpe_record(
     try:
         parsed_data = parsing_result.get("parsed_data", {})
 
+        # Handle completion_date properly - convert empty string to None
+        completion_date_str = parsed_data.get("completion_date", "")
+        completion_date = None
+        if completion_date_str and completion_date_str.strip():
+            try:
+                # Try to parse the date if it's not empty
+                from datetime import datetime
+
+                completion_date = datetime.strptime(
+                    completion_date_str.strip(), "%Y-%m-%d"
+                ).date()
+            except (ValueError, AttributeError):
+                # If parsing fails, leave as None
+                completion_date = None
+
         # Create new CPE record with correct field names from your model
         cpe_record = CPERecord(
             cpa_license_number=license_number,
@@ -194,7 +209,7 @@ def create_cpe_record(
             ),  # Note: mapping ethics_hours -> ethics_credits
             course_title=parsed_data.get("course_title", ""),
             provider=parsed_data.get("provider", ""),
-            completion_date=parsed_data.get("completion_date"),
+            completion_date=completion_date,  # Now properly handled as None or valid date
             certificate_number=parsed_data.get("certificate_number", ""),
             # Parsing metadata
             confidence_score=parsing_result.get("confidence_score", 0.0),
