@@ -160,8 +160,118 @@ def create_cpe_record(
 # ===== API ENDPOINTS =====
 
 
+@router.post("/upload-certificate-authenticated/{license_number}")
+async def upload_certificate_authenticated(
+    license_number: str,
+    file: UploadFile = File(...),
+    parse_with_ai: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    AUTHENTICATED UPLOAD: Upload and process a CPE certificate with display data
+
+    - Validates file type and size
+    - Processes with Google Vision API
+    - Stores document and creates CPE record
+    - Returns detailed certificate display information
+    """
+
+    # Validate user permissions
+    if current_user.license_number != license_number:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Validate file
+    validate_file(file)
+
+    try:
+        # Initialize storage service
+        storage_service = DocumentStorageService()
+
+        # Step 1: Store the document
+        logger.info(f"Uploading file: {file.filename}")
+        upload_result = storage_service.store_document(
+            file, license_number, "certificate"
+        )
+
+        if not upload_result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=f"File upload failed: {upload_result.get('error')}",
+            )
+
+        # Step 2: Process with AI if requested
+        if parse_with_ai:
+            logger.info(f"Processing with AI: {file.filename}")
+            parsing_result = await process_with_vision_ai(file, license_number)
+        else:
+            # Basic result if AI processing is skipped
+            parsing_result = {
+                "success": True,
+                "parsed_data": {
+                    "cpe_hours": 0.0,
+                    "ethics_hours": 0.0,
+                    "course_title": "",
+                    "provider": "",
+                    "completion_date": "",
+                    "certificate_number": "",
+                },
+                "confidence_score": 0.0,
+                "raw_text": "",
+                "processing_method": "manual_entry_required",
+            }
+
+        # Step 3: Create CPE record
+        logger.info(f"Creating CPE record for: {file.filename}")
+        cpe_record = create_cpe_record(
+            parsing_result, file, license_number, current_user, upload_result, db
+        )
+
+        # Return success response with detailed certificate display data
+        return {
+            "success": True,
+            "message": "Certificate uploaded and processed successfully",
+            "data": {
+                "record_id": cpe_record.id,
+                "filename": file.filename,
+                "parsed_data": parsing_result["parsed_data"],
+                "confidence_score": parsing_result["confidence_score"],
+                "document_url": upload_result.get("url"),
+                # Additional display data for immediate viewing
+                "certificate_display": {
+                    "course_title": cpe_record.course_title,
+                    "provider": cpe_record.provider,
+                    "cpe_hours": float(cpe_record.cpe_hours),
+                    "ethics_hours": float(cpe_record.ethics_hours),
+                    "completion_date": cpe_record.completion_date,
+                    "certificate_number": cpe_record.certificate_number,
+                    "processing_quality": get_processing_quality(
+                        parsing_result["confidence_score"]
+                    ),
+                    "extracted_text_preview": (
+                        parsing_result.get("raw_text", "")[:500] + "..."
+                        if len(parsing_result.get("raw_text", "")) > 500
+                        else parsing_result.get("raw_text", "")
+                    ),
+                    "file_info": {
+                        "filename": file.filename,
+                        "content_type": file.content_type,
+                        "upload_timestamp": datetime.utcnow().isoformat(),
+                    },
+                },
+            },
+        }
+
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
 @router.post("/certificate/{license_number}")
-async def upload_certificate(
+async def upload_certificate_simple(
     license_number: str,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
