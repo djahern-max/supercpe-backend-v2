@@ -1,636 +1,897 @@
-# app/api/uploads.py - Simplified Vision Service Upload API
-"""
-Simplified SuperCPE Upload API
+# app/services/vision_service.py - Complete Enhanced Vision Service
 
-Core functionality:
-- File upload and validation
-- AI processing with Google Vision API
-- Document storage and retrieval
-- Basic authentication and error handling
-"""
-
-from fastapi import (
-    APIRouter,
-    Depends,
-    UploadFile,
-    File,
-    HTTPException,
-    BackgroundTasks,
-)
-from sqlalchemy.orm import Session
-from typing import Dict, Optional
-import logging
-import tempfile
-import os
+import re
 from datetime import datetime
+from typing import Dict, List, Optional
+import logging
 
-# Core imports
-from app.core.database import get_db
-from app.services.jwt_service import get_current_user
-from app.models.user import User
-from app.models.cpe_record import CPERecord
-
-# Service imports
-from app.services.vision_service import EnhancedVisionService
-from app.services.document_storage import DocumentStorageService
-
-# Configure logging
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/upload", tags=["Upload"])
-
-# ===== CONSTANTS =====
-ALLOWED_FILE_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/jpg"]
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-FREE_UPLOAD_LIMIT = 10
-
-# ===== UTILITY FUNCTIONS =====
 
 
-def get_processing_quality(confidence_score: float) -> str:
-    """Determine processing quality based on confidence score"""
-    if confidence_score >= 0.8:
-        return "excellent"
-    elif confidence_score >= 0.6:
-        return "good"
-    elif confidence_score >= 0.4:
-        return "moderate"
-    else:
-        return "manual_review_needed"
+class SubjectAreaDetector:
+    """Automatically detect CE Broker subject areas from course content"""
 
-
-def validate_file(file: UploadFile) -> None:
-    """Validate uploaded file type and size"""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided")
-
-    if file.content_type not in ALLOWED_FILE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File type {file.content_type} not supported. Please upload PDF or image files.",
-        )
-
-    # Check file size
-    if hasattr(file, "size") and file.size > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
-
-
-async def process_with_vision_ai(file: UploadFile, license_number: str) -> Dict:
-    """Process file with Google Vision API - REAL EXTRACTION ONLY"""
-    try:
-        logger.info(f"Starting REAL AI processing for {file.filename}")
-
-        # Initialize vision service
-        vision_service = EnhancedVisionService()
-
-        # Read file content
-        file_content = await file.read()
-        await file.seek(0)  # Reset file pointer
-
-        # Extract text using Google Vision API - FORCE REAL PROCESSING
-        raw_text = vision_service.extract_text_from_file(
-            file_content, file.content_type
-        )
-
-        if not raw_text:
-            logger.error("No text extracted from Vision API")
-            raise HTTPException(
-                status_code=500, detail="Failed to extract text from certificate"
-            )
-
-        logger.info(f"Successfully extracted {len(raw_text)} characters of text")
-        logger.info(f"Raw text preview: {raw_text[:500]}...")
-
-        # Parse certificate data
-        parsed_data = vision_service.parse_certificate_data(raw_text, file.filename)
-
-        # Return structured result with REAL data
-        return {
-            "success": True,
-            "parsed_data": {
-                "cpe_hours": parsed_data.get("cpe_credits", 0.0),
-                "ethics_hours": parsed_data.get("ethics_credits", 0.0),
-                "course_title": parsed_data.get("course_title", ""),
-                "provider": parsed_data.get("provider", ""),
-                "completion_date": parsed_data.get("completion_date", ""),
-                "certificate_number": parsed_data.get("certificate_number", ""),
-            },
-            "confidence_score": parsed_data.get("confidence_score", 0.0),
-            "raw_text": raw_text,
-            "processing_method": "google_vision_api_real",
+    def __init__(self):
+        # CE Broker subject areas with associated keywords
+        self.subject_keywords = {
+            "Taxes": [
+                "tax",
+                "taxation",
+                "income tax",
+                "corporate tax",
+                "sales tax",
+                "property tax",
+                "tax preparation",
+                "tax planning",
+                "irs",
+                "1040",
+                "deductions",
+                "credits",
+                "withholding",
+                "estimated tax",
+                "tax law",
+                "tax code",
+                "tax compliance",
+                "tax return",
+                "taxable income",
+            ],
+            "Finance": [
+                "finance",
+                "financial",
+                "investment",
+                "portfolio",
+                "banking",
+                "credit",
+                "debt",
+                "loan",
+                "mortgage",
+                "interest",
+                "cash flow",
+                "financial planning",
+                "capital",
+                "equity",
+                "bonds",
+                "securities",
+                "financial analysis",
+                "budgeting",
+                "financial management",
+                "financial statements",
+                "valuation",
+                "cost of capital",
+            ],
+            "Public accounting": [
+                "public accounting",
+                "cpa firm",
+                "audit",
+                "auditing",
+                "attestation",
+                "compilation",
+                "review",
+                "financial statement audit",
+                "gaas",
+                "pcaob",
+                "independence",
+                "professional standards",
+                "peer review",
+            ],
+            "Governmental accounting": [
+                "government",
+                "governmental",
+                "municipal",
+                "public sector",
+                "gasb",
+                "fund accounting",
+                "governmental funds",
+                "proprietary funds",
+                "fiduciary funds",
+                "budget",
+                "appropriation",
+                "grant accounting",
+            ],
+            "Public auditing": [
+                "government audit",
+                "compliance audit",
+                "single audit",
+                "yellow book",
+                "gagas",
+                "federal audit",
+                "state audit",
+                "performance audit",
+            ],
+            "Business law": [
+                "business law",
+                "corporate law",
+                "contract",
+                "legal",
+                "litigation",
+                "compliance",
+                "regulations",
+                "securities law",
+                "employment law",
+                "intellectual property",
+                "bankruptcy",
+                "mergers",
+                "acquisitions",
+            ],
+            "Business management and organization": [
+                "management",
+                "leadership",
+                "organization",
+                "strategy",
+                "operations",
+                "human resources",
+                "hr",
+                "organizational behavior",
+                "project management",
+                "process improvement",
+                "efficiency",
+                "productivity",
+                "team building",
+                "business strategy",
+                "organizational development",
+                "change management",
+            ],
+            "Economics": [
+                "economics",
+                "economic",
+                "economy",
+                "macroeconomics",
+                "microeconomics",
+                "inflation",
+                "recession",
+                "gdp",
+                "monetary policy",
+                "fiscal policy",
+                "market analysis",
+                "economic indicators",
+                "supply and demand",
+                "economic theory",
+                "market economy",
+            ],
+            "Communications": [
+                "communication",
+                "communications",
+                "presentation",
+                "writing",
+                "speaking",
+                "public speaking",
+                "business communication",
+                "interpersonal",
+                "negotiation",
+                "conflict resolution",
+                "customer service",
+                "business writing",
+                "effective communication",
+            ],
+            "Computer science": [
+                "computer",
+                "technology",
+                "software",
+                "hardware",
+                "programming",
+                "database",
+                "cybersecurity",
+                "it",
+                "information technology",
+                "systems",
+                "network",
+                "cloud computing",
+                "data analytics",
+                "artificial intelligence",
+                "automation",
+                "digital transformation",
+            ],
+            "Personal development": [
+                "personal development",
+                "professional development",
+                "career",
+                "skills development",
+                "training",
+                "education",
+                "learning",
+                "self improvement",
+                "professional growth",
+                "time management",
+                "work-life balance",
+                "stress management",
+            ],
+            "Statistics": [
+                "statistics",
+                "statistical",
+                "data analysis",
+                "regression",
+                "correlation",
+                "probability",
+                "sampling",
+                "statistical methods",
+                "descriptive statistics",
+                "inferential statistics",
+                "hypothesis testing",
+            ],
+            "Mathematics": [
+                "mathematics",
+                "mathematical",
+                "calculus",
+                "algebra",
+                "quantitative",
+                "mathematical modeling",
+                "financial mathematics",
+                "actuarial",
+            ],
+            "Marketing": [
+                "marketing",
+                "advertising",
+                "promotion",
+                "brand",
+                "customer acquisition",
+                "market research",
+                "digital marketing",
+                "social media marketing",
+                "sales",
+                "customer relationship",
+                "market analysis",
+            ],
+            "Personnel and human resources": [
+                "human resources",
+                "hr",
+                "personnel",
+                "employee",
+                "hiring",
+                "recruitment",
+                "compensation",
+                "benefits",
+                "performance management",
+                "employee relations",
+                "workplace",
+                "labor relations",
+                "payroll",
+            ],
+            "Management advisory services": [
+                "advisory",
+                "consulting",
+                "business advisory",
+                "management consulting",
+                "advisory services",
+                "business consulting",
+                "strategic advisory",
+                "financial advisory",
+                "operational advisory",
+            ],
+            "Administrative practices": [
+                "administrative",
+                "administration",
+                "office management",
+                "procedures",
+                "policies",
+                "workflow",
+                "business processes",
+                "documentation",
+                "record keeping",
+                "filing systems",
+                "office procedures",
+                "ethics",
+                "professional responsibility",
+                "conduct",
+                "integrity",
+            ],
+            "Social environment of business": [
+                "social responsibility",
+                "corporate social responsibility",
+                "csr",
+                "sustainability",
+                "environmental",
+                "diversity",
+                "inclusion",
+                "corporate citizenship",
+                "stakeholder",
+                "community relations",
+                "social impact",
+                "environmental impact",
+            ],
+            "Production": [
+                "production",
+                "manufacturing",
+                "operations",
+                "supply chain",
+                "inventory",
+                "quality control",
+                "lean manufacturing",
+                "six sigma",
+                "process improvement",
+                "operational efficiency",
+                "logistics",
+            ],
+            "Specialized knowledge and its application": [
+                "specialized",
+                "industry specific",
+                "niche",
+                "specialized knowledge",
+                "expert",
+                "advanced",
+                "technical expertise",
+                "domain knowledge",
+            ],
         }
 
-    except Exception as e:
-        logger.error(f"REAL AI processing failed: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Vision API processing failed: {str(e)}"
-        )
+    def detect_subject_areas(
+        self,
+        course_title: str,
+        provider: str = "",
+        raw_text: str = "",
+        field_of_study: str = "",
+    ) -> List[str]:
+        """Detect subject areas based on course content"""
+        # Combine all text for analysis
+        combined_text = " ".join(
+            [course_title or "", provider or "", raw_text or "", field_of_study or ""]
+        ).lower()
 
+        detected_areas = []
+        scores = {}
 
-def create_mock_certificate_data(filename: str, raw_text: str = "") -> Dict:
-    """REMOVED - NO MORE MOCK DATA"""
-    raise HTTPException(
-        status_code=500, detail="Mock data disabled - Vision API must work"
-    )
+        # Score each subject area based on keyword matches
+        for subject, keywords in self.subject_keywords.items():
+            score = 0
+            matched_keywords = []
 
+            for keyword in keywords:
+                # Count occurrences of each keyword
+                count = len(
+                    re.findall(
+                        r"\b" + re.escape(keyword.lower()) + r"\b", combined_text
+                    )
+                )
+                if count > 0:
+                    score += count
+                    matched_keywords.append(keyword)
 
-def create_cpe_record(
-    parsing_result: Dict,
-    file: UploadFile,
-    license_number: str,
-    current_user: User,
-    upload_result: Dict,
-    db: Session,
-) -> CPERecord:
-    """Create CPE record from parsing results using correct field names"""
-    try:
-        parsed_data = parsing_result.get("parsed_data", {})
+            if score > 0:
+                scores[subject] = {"score": score, "keywords": matched_keywords}
 
-        # Handle completion_date properly - convert empty string to None
-        completion_date_str = parsed_data.get("completion_date", "")
-        completion_date = None
-        if completion_date_str and completion_date_str.strip():
-            try:
-                # Try to parse the date if it's not empty
-                from datetime import datetime as dt
-
-                completion_date = dt.strptime(
-                    completion_date_str.strip(), "%Y-%m-%d"
-                ).date()
-            except (ValueError, AttributeError):
-                # If parsing fails, leave as None
-                completion_date = None
-
-        # Create new CPE record with correct field names from your model
-        cpe_record = CPERecord(
-            cpa_license_number=license_number,
-            user_id=current_user.id,
-            # Document info - use correct field names
-            document_filename=upload_result.get("filename"),
-            original_filename=file.filename,
-            # Core CPE data - use your model's field names
-            cpe_credits=float(
-                parsed_data.get("cpe_hours", 0)
-            ),  # Note: mapping cpe_hours -> cpe_credits
-            ethics_credits=float(
-                parsed_data.get("ethics_hours", 0)
-            ),  # Note: mapping ethics_hours -> ethics_credits
-            course_title=parsed_data.get("course_title", ""),
-            provider=parsed_data.get("provider", ""),
-            completion_date=completion_date,  # Now properly handled as None or valid date
-            certificate_number=parsed_data.get("certificate_number", ""),
-            # Parsing metadata
-            confidence_score=parsing_result.get("confidence_score", 0.0),
-            parsing_method=parsing_result.get("processing_method", "google_vision_api"),
-            raw_text=parsing_result.get("raw_text", ""),
-            # System fields
-            created_at=datetime.utcnow(),
-        )
-
-        db.add(cpe_record)
-        db.commit()
-        db.refresh(cpe_record)
-
-        return cpe_record
-
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to create CPE record: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to save record: {str(e)}")
-
-
-# ===== API ENDPOINTS =====
-
-
-@router.post("/upload-certificate-authenticated/{license_number}")
-async def upload_certificate_authenticated(
-    license_number: str,
-    file: UploadFile = File(...),
-    parse_with_ai: bool = True,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    AUTHENTICATED UPLOAD: Upload and process a CPE certificate with display data
-
-    - Validates file type and size
-    - Processes with Google Vision API
-    - Stores document and creates CPE record
-    - Returns detailed certificate display information
-    """
-
-    # Validate user permissions
-    if current_user.license_number != license_number:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Validate file
-    validate_file(file)
-
-    try:
-        # Initialize storage service
-        storage_service = DocumentStorageService()
-
-        # Step 1: Store the document using the correct method
-        logger.info(f"Uploading file: {file.filename}")
-        upload_result = await storage_service.upload_cpe_certificate(
-            file, license_number
-        )
-
-        if not upload_result.get("success"):
-            raise HTTPException(
-                status_code=500,
-                detail=f"File upload failed: {upload_result.get('error')}",
+        # Select subject areas with significant scores
+        if scores:
+            # Sort by score, take top matches
+            sorted_subjects = sorted(
+                scores.items(), key=lambda x: x[1]["score"], reverse=True
             )
 
-        # Step 2: Process with AI if requested
-        if parse_with_ai:
-            logger.info(f"Processing with AI: {file.filename}")
-            parsing_result = await process_with_vision_ai(file, license_number)
-        else:
-            # Basic result if AI processing is skipped
-            parsing_result = {
-                "success": True,
-                "parsed_data": {
-                    "cpe_hours": 0.0,
-                    "ethics_hours": 0.0,
-                    "course_title": "",
-                    "provider": "",
-                    "completion_date": "",
-                    "certificate_number": "",
-                },
-                "confidence_score": 0.0,
-                "raw_text": "",
-                "processing_method": "manual_entry_required",
-            }
+            # Take subjects with score >= 1 (at least one keyword match)
+            for subject, data in sorted_subjects:
+                if data["score"] >= 1:
+                    detected_areas.append(subject)
 
-        # Step 3: Create CPE record
-        logger.info(f"Creating CPE record for: {file.filename}")
-        cpe_record = create_cpe_record(
-            parsing_result, file, license_number, current_user, upload_result, db
+                # Limit to top 3 most relevant areas
+                if len(detected_areas) >= 3:
+                    break
+
+        # Apply business rules and fallbacks
+        detected_areas = self._apply_business_rules(
+            detected_areas, course_title, combined_text
         )
 
-        # Return success response with detailed certificate display data
-        return {
-            "success": True,
-            "message": "Certificate uploaded and processed successfully",
-            "data": {
-                "record_id": cpe_record.id,
-                "filename": file.filename,
-                "parsed_data": parsing_result["parsed_data"],
-                "confidence_score": parsing_result["confidence_score"],
-                "document_url": upload_result.get("file_url"),
-                # Additional display data for immediate viewing
-                "certificate_display": {
-                    "course_title": cpe_record.course_title,
-                    "provider": cpe_record.provider,
-                    "cpe_hours": float(
-                        cpe_record.cpe_credits
-                    ),  # Map back to frontend expectation
-                    "ethics_hours": float(
-                        cpe_record.ethics_credits
-                    ),  # Map back to frontend expectation
-                    "completion_date": cpe_record.completion_date,
-                    "certificate_number": cpe_record.certificate_number,
-                    "processing_quality": get_processing_quality(
-                        parsing_result["confidence_score"]
-                    ),
-                    "extracted_text_preview": (
-                        parsing_result.get("raw_text", "")[:500] + "..."
-                        if len(parsing_result.get("raw_text", "")) > 500
-                        else parsing_result.get("raw_text", "")
-                    ),
-                    "file_info": {
-                        "filename": file.filename,
-                        "content_type": file.content_type,
-                        "upload_timestamp": datetime.utcnow().isoformat(),
-                    },
-                },
-            },
-        }
+        return detected_areas
 
-    except HTTPException:
-        # Re-raise HTTP exceptions
-        raise
-    except Exception as e:
-        logger.error(f"Upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+    def _apply_business_rules(
+        self, detected_areas: List[str], course_title: str, combined_text: str
+    ) -> List[str]:
+        """Apply business rules to refine subject area detection"""
 
+        # If no areas detected, apply fallback logic
+        if not detected_areas:
+            # Check for common patterns
+            title_lower = course_title.lower() if course_title else ""
 
-@router.post("/certificate/{license_number}")
-async def upload_certificate_simple(
-    license_number: str,
-    file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Upload and process a CPE certificate
-
-    - Validates file type and size
-    - Processes with Google Vision API
-    - Stores document and creates CPE record
-    """
-
-    # Validate user permissions
-    if current_user.license_number != license_number:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Validate file
-    validate_file(file)
-
-    try:
-        # Initialize storage service
-        storage_service = DocumentStorageService()
-
-        # Step 1: Store the document
-        logger.info(f"Uploading file: {file.filename}")
-        upload_result = storage_service.store_document(
-            file, license_number, "certificate"
-        )
-
-        if not upload_result.get("success"):
-            raise HTTPException(
-                status_code=500,
-                detail=f"File upload failed: {upload_result.get('error')}",
-            )
-
-        # Step 2: Process with AI
-        logger.info(f"Processing with AI: {file.filename}")
-        parsing_result = await process_with_vision_ai(file, license_number)
-
-        # Step 3: Create CPE record
-        logger.info(f"Creating CPE record for: {file.filename}")
-        cpe_record = create_cpe_record(
-            parsing_result, file, license_number, current_user, upload_result, db
-        )
-
-        # Return success response with detailed certificate display data
-        return {
-            "success": True,
-            "message": "Certificate uploaded and processed successfully",
-            "data": {
-                "record_id": cpe_record.id,
-                "filename": file.filename,
-                "parsed_data": parsing_result["parsed_data"],
-                "confidence_score": parsing_result["confidence_score"],
-                "document_url": upload_result.get("url"),
-                # Additional display data for immediate viewing
-                "certificate_display": {
-                    "course_title": cpe_record.course_title,
-                    "provider": cpe_record.provider,
-                    "cpe_hours": float(cpe_record.cpe_hours),
-                    "ethics_hours": float(cpe_record.ethics_hours),
-                    "completion_date": cpe_record.completion_date,
-                    "certificate_number": cpe_record.certificate_number,
-                    "processing_quality": get_processing_quality(
-                        parsing_result["confidence_score"]
-                    ),
-                    "extracted_text_preview": (
-                        parsing_result.get("raw_text", "")[:500] + "..."
-                        if len(parsing_result.get("raw_text", "")) > 500
-                        else parsing_result.get("raw_text", "")
-                    ),
-                    "file_info": {
-                        "filename": file.filename,
-                        "content_type": file.content_type,
-                        "upload_timestamp": datetime.utcnow().isoformat(),
-                    },
-                },
-            },
-        }
-
-    except HTTPException:
-        # Re-raise HTTP exceptions
-        raise
-    except Exception as e:
-        logger.error(f"Upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
-
-@router.get("/certificates/{license_number}")
-async def get_certificates(
-    license_number: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Get all certificates for a license number with detailed display information"""
-
-    # Validate user permissions
-    if current_user.license_number != license_number:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Query certificates
-    certificates = (
-        db.query(CPERecord)
-        .filter(
-            CPERecord.cpa_license_number == license_number,
-            CPERecord.user_id == current_user.id,
-        )
-        .order_by(CPERecord.created_at.desc())
-        .all()
-    )
-
-    return {
-        "success": True,
-        "data": [
-            {
-                "id": cert.id,
-                "course_title": cert.course_title,
-                "provider": cert.provider,
-                "cpe_hours": cert.cpe_credits,  # Map to frontend expectation
-                "ethics_hours": cert.ethics_credits,  # Map to frontend expectation
-                "completion_date": cert.completion_date,
-                "certificate_number": cert.certificate_number,
-                "confidence_score": cert.confidence_score,
-                "document_filename": cert.document_filename,
-                "created_at": cert.created_at,
-                "updated_at": cert.updated_at,
-                # Enhanced display data
-                "certificate_display": {
-                    "processing_quality": get_processing_quality(
-                        cert.confidence_score or 0.0
-                    ),
-                    "has_ethics": bool(cert.ethics_credits and cert.ethics_credits > 0),
-                    "total_credits": float(cert.cpe_credits or 0)
-                    + float(cert.ethics_credits or 0),
-                    "file_type": (
-                        cert.document_filename.split(".")[-1].upper()
-                        if cert.document_filename
-                        else "UNKNOWN"
-                    ),
-                    "extracted_text_preview": (
-                        cert.raw_text[:200] + "..."
-                        if cert.raw_text and len(cert.raw_text) > 200
-                        else cert.raw_text
-                    ),
-                },
-            }
-            for cert in certificates
-        ],
-        "total": len(certificates),
-        "summary": {
-            "total_cpe_hours": sum(
-                float(cert.cpe_credits or 0) for cert in certificates
-            ),
-            "total_ethics_hours": sum(
-                float(cert.ethics_credits or 0) for cert in certificates
-            ),
-            "certificates_count": len(certificates),
-            "high_confidence_count": len(
-                [
-                    cert
-                    for cert in certificates
-                    if cert.confidence_score and cert.confidence_score >= 0.8
+            if any(word in title_lower for word in ["tax", "taxation"]):
+                detected_areas.append("Taxes")
+            elif any(
+                word in title_lower
+                for word in [
+                    "finance",
+                    "financial",
+                    "money",
+                    "investment",
+                    "debt",
+                    "interest",
                 ]
-            ),
-        },
-    }
+            ):
+                detected_areas.append("Finance")
+            elif any(word in title_lower for word in ["business", "management"]):
+                detected_areas.append("Business management and organization")
+            elif any(word in title_lower for word in ["economic", "economy"]):
+                detected_areas.append("Economics")
+            elif any(
+                word in title_lower for word in ["communication", "writing", "speaking"]
+            ):
+                detected_areas.append("Communications")
+            elif any(
+                word in title_lower for word in ["computer", "technology", "software"]
+            ):
+                detected_areas.append("Computer science")
+            elif any(word in title_lower for word in ["ethics", "ethical"]):
+                detected_areas.append("Administrative practices")
+            else:
+                # Default fallback for accounting courses
+                detected_areas.append("Specialized knowledge and its application")
+
+        # Remove duplicates while preserving order
+        seen = set()
+        filtered_areas = []
+        for area in detected_areas:
+            if area not in seen:
+                seen.add(area)
+                filtered_areas.append(area)
+
+        return filtered_areas
 
 
-@router.get("/certificate/{record_id}/details")
-async def get_certificate_details(
-    record_id: int,
-    license_number: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Get detailed information about a specific certificate for display"""
+class CEBrokerMappings:
+    """Helper class for CE Broker field mappings and detection"""
 
-    # Find the record
-    cpe_record = db.query(CPERecord).filter(CPERecord.id == record_id).first()
-    if not cpe_record:
-        raise HTTPException(status_code=404, detail="Certificate not found")
+    @staticmethod
+    def detect_subject_areas(
+        course_title: str, field_of_study: str = "", raw_text: str = ""
+    ) -> List[str]:
+        """Detect subject areas using the SubjectAreaDetector"""
+        detector = SubjectAreaDetector()
+        return detector.detect_subject_areas(course_title, "", raw_text, field_of_study)
 
-    # Validate permissions
-    if (
-        cpe_record.cpa_license_number != license_number
-        or cpe_record.user_id != current_user.id
-    ):
-        raise HTTPException(status_code=403, detail="Access denied")
+    @staticmethod
+    def detect_course_type(raw_text: str, instructional_method: str = "") -> str:
+        """Detect if course is Live or Anytime"""
+        if not raw_text and not instructional_method:
+            return "anytime"  # Default assumption
 
-    return {
-        "success": True,
-        "data": {
-            "id": cpe_record.id,
-            "course_title": cpe_record.course_title,
-            "provider": cpe_record.provider,
-            "cpe_hours": cpe_record.cpe_credits,  # Map to frontend expectation
-            "ethics_hours": cpe_record.ethics_credits,  # Map to frontend expectation
-            "completion_date": cpe_record.completion_date,
-            "certificate_number": cpe_record.certificate_number,
-            "confidence_score": cpe_record.confidence_score,
-            "document_url": cpe_record.document_url,
-            "document_filename": cpe_record.document_filename,
-            "raw_extracted_text": cpe_record.raw_text,  # Use correct field name
-            "created_at": cpe_record.created_at,
-            "updated_at": cpe_record.updated_at,
-            # Enhanced display information
-            "display_info": {
-                "processing_quality": get_processing_quality(
-                    cpe_record.confidence_score or 0.0
-                ),
-                "has_ethics": bool(
-                    cpe_record.ethics_credits and cpe_record.ethics_credits > 0
-                ),
-                "total_credits": float(cpe_record.cpe_credits or 0)
-                + float(cpe_record.ethics_credits or 0),
-                "file_type": (
-                    cpe_record.document_filename.split(".")[-1].upper()
-                    if cpe_record.document_filename
-                    else "UNKNOWN"
-                ),
-                "text_length": len(cpe_record.raw_text) if cpe_record.raw_text else 0,
-                "has_certificate_number": bool(cpe_record.certificate_number),
-                "completion_date_formatted": (
-                    cpe_record.completion_date.strftime("%B %d, %Y")
-                    if cpe_record.completion_date
-                    else None
-                ),
-            },
-        },
-    }
+        combined_text = f"{raw_text} {instructional_method}".lower()
 
+        # Live indicators
+        live_indicators = [
+            "live",
+            "webinar",
+            "classroom",
+            "instructor-led",
+            "seminar",
+            "workshop",
+            "conference",
+            "presentation",
+            "lecture",
+            "group study",
+        ]
 
-@router.delete("/certificate/{record_id}")
-async def delete_certificate(
-    record_id: int,
-    license_number: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Delete a CPE certificate record and its file"""
+        # Anytime indicators
+        anytime_indicators = [
+            "self-study",
+            "online",
+            "computer-based",
+            "self-paced",
+            "on-demand",
+            "qas",
+            "individual study",
+            "correspondence",
+        ]
 
-    # Find the record
-    cpe_record = db.query(CPERecord).filter(CPERecord.id == record_id).first()
-    if not cpe_record:
-        raise HTTPException(status_code=404, detail="Certificate not found")
-
-    # Validate permissions
-    if (
-        cpe_record.cpa_license_number != license_number
-        or cpe_record.user_id != current_user.id
-    ):
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    try:
-        # Delete file from storage
-        storage_service = DocumentStorageService()
-        if cpe_record.document_filename:
-            deletion_result = storage_service.delete_file(cpe_record.document_filename)
-            logger.info(f"Storage deletion result: {deletion_result}")
-
-        # Delete database record
-        db.delete(cpe_record)
-        db.commit()
-
-        return {
-            "success": True,
-            "message": "Certificate deleted successfully",
-        }
-
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Delete failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
-
-
-@router.get("/status/{license_number}")
-async def get_upload_status(
-    license_number: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Get upload status and limits for user"""
-
-    # Validate permissions
-    if current_user.license_number != license_number:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Count uploads
-    upload_count = (
-        db.query(CPERecord)
-        .filter(
-            CPERecord.cpa_license_number == license_number,
-            CPERecord.user_id == current_user.id,
+        live_score = sum(
+            1 for indicator in live_indicators if indicator in combined_text
         )
-        .count()
+        anytime_score = sum(
+            1 for indicator in anytime_indicators if indicator in combined_text
+        )
+
+        if live_score > anytime_score:
+            return "live"
+        else:
+            return "anytime"  # Default to anytime
+
+    @staticmethod
+    def detect_delivery_method(
+        course_type: str, instructional_method: str = "", raw_text: str = ""
+    ) -> str:
+        """Detect delivery method based on course type and content"""
+        combined_text = f"{instructional_method} {raw_text}".lower()
+
+        # Computer-based training indicators
+        if any(
+            indicator in combined_text
+            for indicator in [
+                "computer",
+                "online",
+                "internet",
+                "web-based",
+                "digital",
+                "software",
+                "app",
+                "platform",
+            ]
+        ):
+            return "Computer-Based Training (ie: online courses)"
+
+        # Correspondence indicators
+        elif any(
+            indicator in combined_text
+            for indicator in [
+                "correspondence",
+                "mail",
+                "written",
+                "reading",
+                "book",
+                "manual",
+                "text",
+            ]
+        ):
+            return "Correspondence"
+
+        # Prerecorded broadcast indicators
+        elif any(
+            indicator in combined_text
+            for indicator in [
+                "recorded",
+                "video",
+                "broadcast",
+                "replay",
+                "playback",
+                "dvd",
+                "cd-rom",
+            ]
+        ):
+            return "Prerecorded Broadcast"
+
+        # Default based on course type
+        else:
+            return "Computer-Based Training (ie: online courses)"  # Most common default
+
+
+class EnhancedVisionService:
+    """Enhanced vision service with improved CE Broker field extraction"""
+
+    def __init__(self):
+        self.confidence_threshold = 0.7
+        self.subject_detector = SubjectAreaDetector()
+
+    def extract_ce_broker_fields(self, raw_text: str, parsed_data: Dict) -> Dict:
+        """Extract CE Broker specific fields from certificate text - IMPROVED VERSION"""
+
+        logger.info("Starting CE Broker field extraction...")
+
+        try:
+            # Get basic extracted data
+            course_title = parsed_data.get("course_title", "") or ""
+            field_of_study = parsed_data.get("field_of_study", "") or ""
+
+            logger.info(f"Course title: '{course_title}'")
+            logger.info(f"Field of study: '{field_of_study}'")
+            logger.info(f"Raw text available: {bool(raw_text)}")
+
+            # Extract instructional method first
+            instructional_method = self.extract_instructional_method(raw_text)
+            logger.info(f"Extracted instructional_method: '{instructional_method}'")
+
+            # Auto-detect CE Broker fields with improved logging
+            subject_areas = self.subject_detector.detect_subject_areas(
+                course_title, parsed_data.get("provider", ""), raw_text, field_of_study
+            )
+            logger.info(f"Detected subject_areas: {subject_areas}")
+
+            # IMPROVED: Better course type detection with fallbacks
+            course_type = self._detect_course_type_with_fallbacks(
+                raw_text, instructional_method, course_title
+            )
+            logger.info(f"Detected course_type: '{course_type}'")
+
+            # IMPROVED: Better delivery method detection
+            delivery_method = self._detect_delivery_method_with_fallbacks(
+                course_type, instructional_method, raw_text, course_title
+            )
+            logger.info(f"Detected delivery_method: '{delivery_method}'")
+
+            # Extract additional fields
+            nasba_sponsor = self.extract_nasba_sponsor(raw_text)
+            course_code = self.extract_course_code(raw_text)
+            program_level = self.extract_program_level(raw_text)
+
+            logger.info(
+                f"Additional fields - NASBA: {nasba_sponsor}, Code: {course_code}, Level: {program_level}"
+            )
+
+            # Ensure we have minimum required fields
+            if not course_type:
+                course_type = "anytime"  # Safe default
+                logger.warning("No course_type detected, using default: 'anytime'")
+
+            if not delivery_method:
+                delivery_method = (
+                    "Computer-Based Training (ie: online courses)"  # Safe default
+                )
+                logger.warning("No delivery_method detected, using default")
+
+            if not subject_areas or len(subject_areas) == 0:
+                subject_areas = [
+                    "Specialized knowledge and its application"
+                ]  # Safe default
+                logger.warning("No subject_areas detected, using default")
+
+            result = {
+                "course_type": course_type,
+                "delivery_method": delivery_method,
+                "instructional_method": instructional_method,
+                "subject_areas": subject_areas,
+                "nasba_sponsor_number": nasba_sponsor,
+                "course_code": course_code,
+                "program_level": program_level,
+                "ce_category": self.determine_ce_category(subject_areas, course_title),
+                "ce_broker_ready": self.check_ce_broker_readiness(
+                    parsed_data,
+                    {
+                        "course_type": course_type,
+                        "delivery_method": delivery_method,
+                        "subject_areas": subject_areas,
+                    },
+                ),
+            }
+
+            logger.info(f"Final CE Broker fields: {result}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in CE Broker field extraction: {str(e)}")
+            logger.exception("Full traceback:")
+
+            # Return safe defaults
+            return {
+                "course_type": "anytime",
+                "delivery_method": "Computer-Based Training (ie: online courses)",
+                "instructional_method": None,
+                "subject_areas": ["Specialized knowledge and its application"],
+                "nasba_sponsor_number": None,
+                "course_code": None,
+                "program_level": None,
+                "ce_category": "General CPE",
+                "ce_broker_ready": False,
+            }
+
+    def _detect_course_type_with_fallbacks(
+        self, raw_text: str, instructional_method: str, course_title: str
+    ) -> str:
+        """Improved course type detection with multiple fallback strategies"""
+
+        if not raw_text and not instructional_method and not course_title:
+            return "anytime"  # Default assumption
+
+        combined_text = f"{raw_text} {instructional_method} {course_title}".lower()
+
+        # Live indicators (more comprehensive)
+        live_indicators = [
+            "live",
+            "webinar",
+            "classroom",
+            "instructor-led",
+            "seminar",
+            "workshop",
+            "conference",
+            "presentation",
+            "lecture",
+            "group study",
+            "in-person",
+            "face-to-face",
+            "interactive",
+            "real-time",
+            "scheduled",
+            "session",
+        ]
+
+        # Anytime indicators (more comprehensive)
+        anytime_indicators = [
+            "self-study",
+            "online",
+            "computer-based",
+            "self-paced",
+            "on-demand",
+            "qas",
+            "individual study",
+            "correspondence",
+            "digital",
+            "e-learning",
+            "video",
+            "recorded",
+            "tutorial",
+            "course materials",
+            "study guide",
+        ]
+
+        live_score = sum(
+            1 for indicator in live_indicators if indicator in combined_text
+        )
+        anytime_score = sum(
+            1 for indicator in anytime_indicators if indicator in combined_text
+        )
+
+        logger.info(
+            f"Course type scoring - Live: {live_score}, Anytime: {anytime_score}"
+        )
+
+        if live_score > anytime_score:
+            return "live"
+        else:
+            return "anytime"  # Default to anytime
+
+    def _detect_delivery_method_with_fallbacks(
+        self,
+        course_type: str,
+        instructional_method: str,
+        raw_text: str,
+        course_title: str,
+    ) -> str:
+        """Improved delivery method detection with better pattern matching"""
+
+        combined_text = f"{instructional_method} {raw_text} {course_title}".lower()
+
+        # Computer-based training indicators (expanded)
+        if any(
+            indicator in combined_text
+            for indicator in [
+                "computer",
+                "online",
+                "internet",
+                "web-based",
+                "digital",
+                "software",
+                "app",
+                "platform",
+                "e-learning",
+                "virtual",
+                "portal",
+                "website",
+            ]
+        ):
+            return "Computer-Based Training (ie: online courses)"
+
+        # Correspondence indicators (expanded)
+        elif any(
+            indicator in combined_text
+            for indicator in [
+                "correspondence",
+                "mail",
+                "written",
+                "reading",
+                "book",
+                "manual",
+                "text",
+                "study guide",
+                "materials",
+                "self-study",
+                "individual",
+            ]
+        ):
+            return "Correspondence"
+
+        # Prerecorded broadcast indicators (expanded)
+        elif any(
+            indicator in combined_text
+            for indicator in [
+                "recorded",
+                "video",
+                "broadcast",
+                "replay",
+                "playback",
+                "dvd",
+                "cd-rom",
+                "streaming",
+                "media",
+                "recording",
+            ]
+        ):
+            return "Prerecorded Broadcast"
+
+        # Default based on course type
+        else:
+            return "Computer-Based Training (ie: online courses)"  # Most common default
+
+    def check_ce_broker_readiness(
+        self, parsed_data: Dict, ce_broker_data: Dict
+    ) -> bool:
+        """Check if record has all required fields for CE Broker export - IMPROVED"""
+
+        required_checks = [
+            ("course_title", parsed_data.get("course_title")),
+            ("provider", parsed_data.get("provider")),
+            ("completion_date", parsed_data.get("completion_date")),
+            ("cpe_credits", parsed_data.get("cpe_credits")),
+            ("course_type", ce_broker_data.get("course_type")),
+            ("delivery_method", ce_broker_data.get("delivery_method")),
+            ("subject_areas", ce_broker_data.get("subject_areas")),
+        ]
+
+        missing_fields = []
+        for field_name, field_value in required_checks:
+            if field_value is None or field_value == "" or field_value == []:
+                missing_fields.append(field_name)
+
+        is_ready = len(missing_fields) == 0
+
+        if missing_fields:
+            logger.warning(f"CE Broker not ready. Missing fields: {missing_fields}")
+        else:
+            logger.info("CE Broker ready - all required fields present")
+
+        return is_ready
+
+    def enhance_parsed_data(self, raw_text: str, basic_parsed_data: Dict) -> Dict:
+        """Main method to enhance basic parsed data with CE Broker fields - IMPROVED"""
+
+        logger.info("Starting data enhancement...")
+
+        # Extract CE Broker specific fields
+        ce_broker_fields = self.extract_ce_broker_fields(raw_text, basic_parsed_data)
+
+        # Combine with basic data
+        enhanced_data = {**basic_parsed_data, **ce_broker_fields}
+
+        # Add metadata
+        enhanced_data["parsing_enhanced"] = True
+        enhanced_data["enhancement_timestamp"] = datetime.now().isoformat()
+
+        logger.info(
+            f"Enhanced parsing completed. CE Broker ready: {ce_broker_fields['ce_broker_ready']}"
+        )
+
+        return enhanced_data
+
+
+# Create CPE record with enhanced CE Broker fields
+def create_enhanced_cpe_record_from_parsing(
+    parsing_result: Dict,
+    file,
+    license_number: str,
+    current_user,
+    upload_result: Dict,
+    storage_tier: str = "free",
+):
+    """Create CPE record with enhanced CE Broker fields"""
+
+    from app.models.cpe_record import CPERecord
+    from datetime import datetime
+
+    # Initialize enhanced vision service
+    vision_service = EnhancedVisionService()
+
+    # Get basic parsed data
+    parsed_data = parsing_result.get("parsed_data", {})
+    raw_text = parsing_result.get("raw_text", "")
+
+    # Enhance with CE Broker fields
+    enhanced_data = vision_service.enhance_parsed_data(raw_text, parsed_data)
+
+    # Create CPE record with all fields
+    cpe_record = CPERecord(
+        # Basic fields
+        cpa_license_number=license_number,
+        user_id=current_user.id if current_user else None,
+        document_filename=upload_result.get("file_key", file.filename),
+        original_filename=file.filename,
+        # Core CPE data
+        cpe_credits=enhanced_data.get("cpe_credits", 0.0),
+        ethics_credits=enhanced_data.get("ethics_credits", 0.0),
+        course_title=enhanced_data.get("course_title"),
+        provider=enhanced_data.get("provider"),
+        completion_date=enhanced_data.get("completion_date"),
+        certificate_number=enhanced_data.get("certificate_number"),
+        # CE Broker fields
+        course_type=enhanced_data.get("course_type"),
+        delivery_method=enhanced_data.get("delivery_method"),
+        instructional_method=enhanced_data.get("instructional_method"),
+        subject_areas=enhanced_data.get("subject_areas"),
+        field_of_study=enhanced_data.get("field_of_study"),
+        ce_category=enhanced_data.get("ce_category"),
+        nasba_sponsor_number=enhanced_data.get("nasba_sponsor_number"),
+        course_code=enhanced_data.get("course_code"),
+        program_level=enhanced_data.get("program_level"),
+        ce_broker_ready=enhanced_data.get("ce_broker_ready", False),
+        # Parsing metadata
+        confidence_score=parsing_result.get("confidence_score", 0.0),
+        parsing_method=parsing_result.get("parsing_method", "google_vision"),
+        raw_text=raw_text,
+        parsing_notes=parsing_result.get("notes"),
+        # System fields
+        storage_tier=storage_tier,
+        created_at=datetime.now(),
     )
 
-    return {
-        "success": True,
-        "data": {
-            "uploads_used": upload_count,
-            "uploads_remaining": max(0, FREE_UPLOAD_LIMIT - upload_count),
-            "upload_limit": FREE_UPLOAD_LIMIT,
-            "can_upload": upload_count < FREE_UPLOAD_LIMIT,
-        },
-    }
-
-
-@router.get("/health")
-async def health_check():
-    """Simple health check endpoint"""
-    return {
-        "success": True,
-        "message": "Upload service is healthy",
-        "timestamp": datetime.utcnow(),
-    }
+    return cpe_record

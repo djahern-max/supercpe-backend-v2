@@ -1,8 +1,8 @@
-"""Initial Migration
+"""initial migration
 
-Revision ID: bec89645bef4
+Revision ID: b690dd031c51
 Revises: 
-Create Date: 2025-06-18 12:39:45.433005
+Create Date: 2025-06-22 22:14:50.551517
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'bec89645bef4'
+revision: str = 'b690dd031c51'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -43,6 +43,7 @@ def upgrade() -> None:
     sa.Column('status', sa.String(length=50), nullable=True),
     sa.Column('email', sa.String(length=255), nullable=True),
     sa.Column('phone', sa.String(length=20), nullable=True),
+    sa.Column('passcode', sa.String(length=12), nullable=True),
     sa.Column('is_premium', sa.Boolean(), nullable=True),
     sa.Column('total_cpe_hours', sa.Integer(), nullable=True),
     sa.Column('ethics_hours', sa.Integer(), nullable=True),
@@ -54,31 +55,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_cpas_email'), 'cpas', ['email'], unique=True)
     op.create_index(op.f('ix_cpas_id'), 'cpas', ['id'], unique=False)
     op.create_index(op.f('ix_cpas_license_number'), 'cpas', ['license_number'], unique=True)
-    op.create_table('cpe_records',
-    sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('cpa_license_number', sa.String(length=20), nullable=False),
-    sa.Column('document_filename', sa.String(length=500), nullable=False),
-    sa.Column('original_filename', sa.String(length=255), nullable=True),
-    sa.Column('cpe_credits', sa.Float(), nullable=True),
-    sa.Column('ethics_credits', sa.Float(), nullable=True),
-    sa.Column('course_title', sa.String(length=500), nullable=True),
-    sa.Column('provider', sa.String(length=255), nullable=True),
-    sa.Column('completion_date', sa.Date(), nullable=True),
-    sa.Column('certificate_number', sa.String(length=100), nullable=True),
-    sa.Column('confidence_score', sa.Float(), nullable=True),
-    sa.Column('parsing_method', sa.String(length=50), nullable=True),
-    sa.Column('raw_text', sa.Text(), nullable=True),
-    sa.Column('parsing_notes', sa.Text(), nullable=True),
-    sa.Column('is_verified', sa.Boolean(), nullable=True),
-    sa.Column('verified_by', sa.String(length=100), nullable=True),
-    sa.Column('verification_date', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('storage_tier', sa.String(length=20), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_cpe_records_cpa_license_number'), 'cpe_records', ['cpa_license_number'], unique=False)
-    op.create_index(op.f('ix_cpe_records_id'), 'cpe_records', ['id'], unique=False)
+    op.create_index(op.f('ix_cpas_passcode'), 'cpas', ['passcode'], unique=True)
     op.create_table('payments',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('cpa_license_number', sa.String(length=20), nullable=False),
@@ -121,12 +98,57 @@ def upgrade() -> None:
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_login', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('accepted_extended_trial', sa.Boolean(), nullable=False),
+    sa.Column('extended_trial_accepted_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('initial_trial_completed_at', sa.DateTime(timezone=True), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(op.f('ix_users_accepted_extended_trial'), 'users', ['accepted_extended_trial'], unique=False)
     op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
     op.create_index(op.f('ix_users_id'), 'users', ['id'], unique=False)
     op.create_index(op.f('ix_users_license_number'), 'users', ['license_number'], unique=False)
     op.create_index(op.f('ix_users_oauth_id'), 'users', ['oauth_id'], unique=False)
+    op.create_table('cpe_records',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('cpa_license_number', sa.String(length=20), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=True),
+    sa.Column('document_filename', sa.String(length=500), nullable=False),
+    sa.Column('original_filename', sa.String(length=255), nullable=True),
+    sa.Column('cpe_credits', sa.Float(), nullable=True),
+    sa.Column('ethics_credits', sa.Float(), nullable=True),
+    sa.Column('course_title', sa.String(length=500), nullable=True),
+    sa.Column('provider', sa.String(length=255), nullable=True),
+    sa.Column('completion_date', sa.Date(), nullable=True),
+    sa.Column('certificate_number', sa.String(length=100), nullable=True),
+    sa.Column('course_type', sa.String(length=50), nullable=True),
+    sa.Column('delivery_method', sa.String(length=100), nullable=True),
+    sa.Column('instructional_method', sa.String(length=100), nullable=True),
+    sa.Column('subject_areas', sa.ARRAY(sa.String()), nullable=True),
+    sa.Column('field_of_study', sa.String(length=100), nullable=True),
+    sa.Column('ce_category', sa.String(length=50), nullable=True),
+    sa.Column('nasba_sponsor_number', sa.String(length=20), nullable=True),
+    sa.Column('sponsor_name', sa.String(length=255), nullable=True),
+    sa.Column('course_code', sa.String(length=50), nullable=True),
+    sa.Column('program_level', sa.String(length=50), nullable=True),
+    sa.Column('ce_broker_exported', sa.Boolean(), nullable=True),
+    sa.Column('ce_broker_export_date', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('ce_broker_ready', sa.Boolean(), nullable=True),
+    sa.Column('confidence_score', sa.Float(), nullable=True),
+    sa.Column('parsing_method', sa.String(length=50), nullable=True),
+    sa.Column('raw_text', sa.Text(), nullable=True),
+    sa.Column('parsing_notes', sa.Text(), nullable=True),
+    sa.Column('is_verified', sa.Boolean(), nullable=True),
+    sa.Column('verified_by', sa.String(length=100), nullable=True),
+    sa.Column('verification_date', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('storage_tier', sa.String(length=20), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_cpe_records_cpa_license_number'), 'cpe_records', ['cpa_license_number'], unique=False)
+    op.create_index(op.f('ix_cpe_records_id'), 'cpe_records', ['id'], unique=False)
+    op.create_index(op.f('ix_cpe_records_user_id'), 'cpe_records', ['user_id'], unique=False)
     op.create_table('cpe_upload_sessions',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('cpa_license_number', sa.String(length=20), nullable=False),
@@ -182,10 +204,15 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_cpe_upload_sessions_id'), table_name='cpe_upload_sessions')
     op.drop_index(op.f('ix_cpe_upload_sessions_cpa_license_number'), table_name='cpe_upload_sessions')
     op.drop_table('cpe_upload_sessions')
+    op.drop_index(op.f('ix_cpe_records_user_id'), table_name='cpe_records')
+    op.drop_index(op.f('ix_cpe_records_id'), table_name='cpe_records')
+    op.drop_index(op.f('ix_cpe_records_cpa_license_number'), table_name='cpe_records')
+    op.drop_table('cpe_records')
     op.drop_index(op.f('ix_users_oauth_id'), table_name='users')
     op.drop_index(op.f('ix_users_license_number'), table_name='users')
     op.drop_index(op.f('ix_users_id'), table_name='users')
     op.drop_index(op.f('ix_users_email'), table_name='users')
+    op.drop_index(op.f('ix_users_accepted_extended_trial'), table_name='users')
     op.drop_table('users')
     op.drop_index(op.f('ix_payments_stripe_subscription_id'), table_name='payments')
     op.drop_index(op.f('ix_payments_stripe_payment_intent_id'), table_name='payments')
@@ -193,9 +220,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_payments_id'), table_name='payments')
     op.drop_index(op.f('ix_payments_cpa_license_number'), table_name='payments')
     op.drop_table('payments')
-    op.drop_index(op.f('ix_cpe_records_id'), table_name='cpe_records')
-    op.drop_index(op.f('ix_cpe_records_cpa_license_number'), table_name='cpe_records')
-    op.drop_table('cpe_records')
+    op.drop_index(op.f('ix_cpas_passcode'), table_name='cpas')
     op.drop_index(op.f('ix_cpas_license_number'), table_name='cpas')
     op.drop_index(op.f('ix_cpas_id'), table_name='cpas')
     op.drop_index(op.f('ix_cpas_email'), table_name='cpas')
