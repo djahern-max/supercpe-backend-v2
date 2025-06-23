@@ -46,6 +46,9 @@ import os
 from datetime import datetime
 import logging
 import json
+from typing import Dict
+from datetime import datetime, date
+
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -125,15 +128,17 @@ async def process_with_ai(file: UploadFile, license_number: str):
 
 
 def create_enhanced_cpe_record_from_parsing(
-    parsing_result: dict,
-    file: UploadFile,
+    parsing_result: Dict,
+    file,
     license_number: str,
-    current_user: User,
-    upload_result: dict,
+    current_user,
+    upload_result: Dict,
     storage_tier: str = "free",
 ):
-    """Enhanced version that adds CE Broker fields - FIXED VERSION"""
+    """Create CPE record with enhanced CE Broker fields - FIXED VERSION"""
 
+    # CRITICAL FIX: Import CPERecord at the top of the function
+    from app.models.cpe_record import CPERecord
     from datetime import datetime
 
     try:
@@ -144,129 +149,110 @@ def create_enhanced_cpe_record_from_parsing(
         parsed_data = parsing_result.get("parsed_data", {})
         raw_text = parsing_result.get("raw_text", "")
 
-        logger.info(f"Enhancing CPE record for license {license_number}")
+        logger.info(f"Starting enhanced parsing for license {license_number}")
+        logger.info(f"Raw text length: {len(raw_text) if raw_text else 0}")
+        logger.info(f"Basic parsed data keys: {list(parsed_data.keys())}")
 
-        # Convert your existing parsed_data format to flat format for enhancement
-        flat_parsed_data = {}
-        for key, value in parsed_data.items():
-            if isinstance(value, dict) and "value" in value:
-                flat_parsed_data[key] = value["value"]
-            else:
-                flat_parsed_data[key] = value
-
-        # Ensure required fields exist
-        flat_parsed_data.update(
-            {
-                "course_title": flat_parsed_data.get("course_title", ""),
-                "provider": flat_parsed_data.get("provider", ""),
-                "cpe_credits": float(flat_parsed_data.get("cpe_hours", 0.0)),
-                "ethics_credits": float(flat_parsed_data.get("ethics_hours", 0.0)),
-            }
-        )
+        # CRITICAL FIX: Ensure we have raw text for processing
+        if not raw_text:
+            logger.warning("No raw text available for CE Broker field extraction")
+            # Try to get raw text from parsed data if available
+            raw_text = parsed_data.get("raw_text", "")
 
         # Enhance with CE Broker fields
-        enhanced_data = vision_service.enhance_parsed_data(raw_text, flat_parsed_data)
+        enhanced_data = vision_service.enhance_parsed_data(raw_text, parsed_data)
 
-        # Parse completion date (keep your existing logic)
-        completion_date_str = flat_parsed_data.get("completion_date", "")
+        # CRITICAL FIX: Handle date parsing properly
+        completion_date_value = enhanced_data.get("completion_date")
         parsed_completion_date = None
-        if completion_date_str:
-            try:
-                parsed_completion_date = datetime.fromisoformat(
-                    completion_date_str
-                ).date()
-            except (ValueError, AttributeError):
-                try:
-                    parsed_completion_date = datetime.strptime(
-                        completion_date_str, "%Y-%m-%d"
-                    ).date()
-                except (ValueError, AttributeError):
-                    parsed_completion_date = datetime.utcnow().date()
-        else:
-            parsed_completion_date = datetime.utcnow().date()
 
-        # Create CPE record with enhanced data
+        if completion_date_value:
+            if isinstance(completion_date_value, str) and completion_date_value.strip():
+                try:
+                    # Try different date formats
+                    from dateutil import parser
+
+                    parsed_completion_date = parser.parse(completion_date_value).date()
+                except (ValueError, TypeError):
+                    try:
+                        parsed_completion_date = datetime.strptime(
+                            completion_date_value, "%Y-%m-%d"
+                        ).date()
+                    except (ValueError, TypeError):
+                        logger.warning(
+                            f"Could not parse completion date: {completion_date_value}"
+                        )
+                        parsed_completion_date = None
+            elif hasattr(completion_date_value, "date"):
+                parsed_completion_date = completion_date_value.date()
+            elif isinstance(completion_date_value, date):
+                parsed_completion_date = completion_date_value
+
+        # Create CPE record with all fields - FIXED
         cpe_record = CPERecord(
-            # Your existing fields
+            # Basic fields
             cpa_license_number=license_number,
             user_id=current_user.id if current_user else None,
-            document_filename=upload_result.get(
-                "filename", file.filename
-            ),  # FIXED: use "filename" key
+            document_filename=upload_result.get("file_key", file.filename),
             original_filename=file.filename,
+            # Core CPE data
             cpe_credits=float(enhanced_data.get("cpe_credits", 0.0)),
             ethics_credits=float(enhanced_data.get("ethics_credits", 0.0)),
-            course_title=enhanced_data.get("course_title", "Manual Entry Required"),
-            provider=enhanced_data.get("provider", "Unknown Provider"),
-            completion_date=parsed_completion_date,
-            certificate_number=enhanced_data.get("certificate_number", ""),
-            confidence_score=(
-                parsing_result.get("confidence_score", 0.0) if parsing_result else 0.0
-            ),
-            parsing_method=(
-                "google_vision"
-                if parsing_result and parsing_result.get("success")
-                else "manual"
-            ),
-            raw_text=raw_text,
-            storage_tier=storage_tier,
-            is_verified=False,
-            created_at=datetime.utcnow(),
-            # NEW: CE Broker fields
+            course_title=enhanced_data.get("course_title") or "",
+            provider=enhanced_data.get("provider") or "",
+            completion_date=parsed_completion_date,  # FIXED: Properly parsed date or None
+            certificate_number=enhanced_data.get("certificate_number") or "",
+            # CE Broker fields
             course_type=enhanced_data.get("course_type"),
             delivery_method=enhanced_data.get("delivery_method"),
             instructional_method=enhanced_data.get("instructional_method"),
-            subject_areas=enhanced_data.get("subject_areas", []),
+            subject_areas=enhanced_data.get("subject_areas") or [],
             field_of_study=enhanced_data.get("field_of_study"),
             ce_category=enhanced_data.get("ce_category"),
             nasba_sponsor_number=enhanced_data.get("nasba_sponsor_number"),
             course_code=enhanced_data.get("course_code"),
             program_level=enhanced_data.get("program_level"),
             ce_broker_ready=enhanced_data.get("ce_broker_ready", False),
+            # Parsing metadata
+            confidence_score=parsing_result.get("confidence_score", 0.0),
+            parsing_method=parsing_result.get("parsing_method", "google_vision"),
+            raw_text=raw_text,
+            parsing_notes=parsing_result.get("notes"),
+            # System fields
+            storage_tier=storage_tier,
+            created_at=datetime.now(),
         )
 
-        logger.info(f"Enhanced CPE record created:")
-        logger.info(f"  - course_type: {cpe_record.course_type}")
-        logger.info(f"  - delivery_method: {cpe_record.delivery_method}")
-        logger.info(f"  - subject_areas: {cpe_record.subject_areas}")
-        logger.info(f"  - ce_broker_ready: {cpe_record.ce_broker_ready}")
-
+        logger.info(f"Enhanced CPE record created successfully")
         return cpe_record
 
     except Exception as e:
         logger.error(f"Enhancement failed, creating basic record: {str(e)}")
         logger.exception("Full traceback:")
 
-        # Create basic CPE record without enhancement
+        # CRITICAL FIX: Ensure CPERecord is imported in the fallback too
         from app.models.cpe_record import CPERecord
 
-        return CPERecord(
+        # Create basic CPE record without enhancement
+        basic_record = CPERecord(
             cpa_license_number=license_number,
             user_id=current_user.id if current_user else None,
             document_filename=upload_result.get("file_key", file.filename),
             original_filename=file.filename,
-            cpe_credits=parsing_result.get("parsed_data", {})
-            .get("cpe_credits", {})
-            .get("value", 0.0),
-            ethics_credits=parsing_result.get("parsed_data", {})
-            .get("ethics_credits", {})
-            .get("value", 0.0),
-            course_title=parsing_result.get("parsed_data", {})
-            .get("course_title", {})
-            .get("value"),
-            provider=parsing_result.get("parsed_data", {})
-            .get("provider", {})
-            .get("value"),
-            completion_date=parsing_result.get("parsed_data", {})
-            .get("completion_date", {})
-            .get("value"),
-            certificate_number=parsing_result.get("parsed_data", {})
-            .get("certificate_number", {})
-            .get("value"),
-            raw_text=parsing_result.get("raw_text", ""),
+            cpe_credits=0.0,
+            ethics_credits=0.0,
+            course_title="Manual Entry Required",
+            provider="Unknown Provider",
+            completion_date=None,  # FIXED: Set to None instead of empty string
+            certificate_number="",
+            confidence_score=0.0,
+            parsing_method="fallback",
+            raw_text="",
             storage_tier=storage_tier,
             created_at=datetime.now(),
         )
+
+        return basic_record
 
 
 def check_for_similar_certificates(
