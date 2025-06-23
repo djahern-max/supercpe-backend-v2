@@ -79,6 +79,9 @@ async def process_with_vision_ai(file: UploadFile, license_number: str) -> Dict:
     try:
         logger.info(f"Starting REAL AI processing for {file.filename}")
 
+        # Import here to avoid circular import
+        from app.services.vision_service import EnhancedVisionService
+
         # Initialize vision service
         vision_service = EnhancedVisionService()
 
