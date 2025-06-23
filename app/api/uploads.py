@@ -260,10 +260,49 @@ async def upload_certificate_authenticated(
     try:
         logger.info(f"Starting authenticated upload for license {license_number}")
 
+        # Check subscription status first
+        stripe_service = StripeService(db)
+        has_subscription = stripe_service.has_active_subscription(license_number)
+
+        # CRITICAL FIX: Determine storage tier based on subscription status
+        storage_tier = "premium" if has_subscription else "free"
+
+        logger.info(
+            f"User subscription status: {has_subscription}, storage_tier: {storage_tier}"
+        )
+
+        # Check upload limits for free tier users
+        if not has_subscription:
+            # Count existing free uploads by this user
+            free_uploads = (
+                db.query(CPERecord)
+                .filter(
+                    CPERecord.cpa_license_number == license_number,
+                    CPERecord.user_id == current_user.id,
+                    CPERecord.storage_tier == "free",
+                )
+                .count()
+            )
+
+            logger.info(f"User has {free_uploads} free uploads used")
+
+            # Check if user is at limit
+            if free_uploads >= TOTAL_FREE_UPLOADS:
+                raise HTTPException(
+                    status_code=402,
+                    detail={
+                        "error": "Upload limit reached",
+                        "message": f"You've used all {TOTAL_FREE_UPLOADS} free uploads. Please upgrade to continue.",
+                        "uploads_used": free_uploads,
+                        "limit": TOTAL_FREE_UPLOADS,
+                        "upgrade_required": True,
+                    },
+                )
+
         # Validate file first
         validate_file(file)
 
-        # Step 1: Upload file to storage (ADD THIS - it was missing!)
+        # Step 1: Upload file to storage
         storage_service = DocumentStorageService()
         upload_result = await storage_service.upload_cpe_certificate(
             file, license_number
@@ -272,7 +311,7 @@ async def upload_certificate_authenticated(
         if not upload_result.get("success"):
             raise HTTPException(status_code=500, detail=upload_result.get("error"))
 
-        # CRITICAL: After parsing, ensure we use the enhanced creation function
+        # Step 2: Process with AI if requested
         if parse_with_ai:
             # Get your parsing result from your vision service
             parsing_result = await process_with_ai(file, license_number)
@@ -281,25 +320,24 @@ async def upload_certificate_authenticated(
             logger.info(f"Parsing result keys: {list(parsing_result.keys())}")
             logger.info(f"Raw text available: {bool(parsing_result.get('raw_text'))}")
 
-            # FIXED: Use the enhanced creation function
-            storage_tier = (
-                "premium"  # Set storage tier for premium uploads (REMOVE DUPLICATE)
-            )
-
-            # Step 3: Create CPE record with premium tier
+            # Step 3: Create CPE record with CORRECT storage tier
             cpe_record = create_enhanced_cpe_record_from_parsing(
                 parsing_result,
                 file,
                 license_number,
                 current_user,
-                upload_result,  # Now this exists from Step 1 above
-                storage_tier,
+                upload_result,
+                storage_tier,  # THIS WAS THE MISSING PIECE!
             )
 
             # CRITICAL: Save to database
             db.add(cpe_record)
             db.commit()
             db.refresh(cpe_record)
+
+            logger.info(
+                f"Successfully saved CPE record with storage_tier: {cpe_record.storage_tier}"
+            )
 
             # DEBUG: Verify CE Broker fields were set
             logger.info(f"Saved record with CE Broker fields:")
@@ -308,101 +346,49 @@ async def upload_certificate_authenticated(
             logger.info(f"  - subject_areas: {cpe_record.subject_areas}")
             logger.info(f"  - ce_broker_ready: {cpe_record.ce_broker_ready}")
 
-            # VALIDATION: Check for missing fields and warn user
-            missing_fields = []
-            if not cpe_record.course_type:
-                missing_fields.append("course_type")
-            if not cpe_record.delivery_method:
-                missing_fields.append("delivery_method")
-            if not cpe_record.subject_areas or len(cpe_record.subject_areas) == 0:
-                missing_fields.append("subject_areas")
-
-            if missing_fields:
-                logger.warning(
-                    f"Record {cpe_record.id} missing CE Broker fields: {missing_fields}"
-                )
-
-                # Try to re-process if fields are missing
-                vision_service = EnhancedVisionService()
-                try:
-                    basic_data = {
-                        "course_title": cpe_record.course_title,
-                        "provider": cpe_record.provider,
-                        "completion_date": cpe_record.completion_date,
-                        "cpe_credits": cpe_record.cpe_credits,
-                    }
-
-                    enhanced_fields = vision_service.extract_ce_broker_fields(
-                        cpe_record.raw_text, basic_data
-                    )
-
-                    # Update missing fields
-                    cpe_record.course_type = (
-                        cpe_record.course_type or enhanced_fields.get("course_type")
-                    )
-                    cpe_record.delivery_method = (
-                        cpe_record.delivery_method
-                        or enhanced_fields.get("delivery_method")
-                    )
-                    cpe_record.subject_areas = (
-                        cpe_record.subject_areas
-                        or enhanced_fields.get("subject_areas", [])
-                    )
-                    cpe_record.ce_broker_ready = enhanced_fields.get(
-                        "ce_broker_ready", False
-                    )
-
-                    db.commit()
-                    logger.info(f"Re-processed and updated record {cpe_record.id}")
-
-                except Exception as e:
-                    logger.error(f"Failed to re-process CE Broker fields: {str(e)}")
-
             return {
                 "success": True,
-                "message": "Certificate uploaded and processed successfully",
-                "record_id": cpe_record.id,
-                "ce_broker_ready": cpe_record.ce_broker_ready,
-                "parsed_data": {
+                "message": "✅ Certificate uploaded and saved successfully",
+                "cpe_record": {
+                    "id": cpe_record.id,
                     "course_title": cpe_record.course_title,
-                    "provider": cpe_record.provider,
                     "cpe_credits": cpe_record.cpe_credits,
+                    "ethics_credits": cpe_record.ethics_credits,
+                    "provider": cpe_record.provider,
                     "completion_date": (
                         cpe_record.completion_date.isoformat()
                         if cpe_record.completion_date
                         else None
                     ),
-                    "course_type": cpe_record.course_type,
-                    "delivery_method": cpe_record.delivery_method,
-                    "subject_areas": cpe_record.subject_areas,
+                    "storage_tier": cpe_record.storage_tier,  # Include this for verification
                 },
-                "missing_fields": missing_fields if missing_fields else None,
-                "warnings": (
-                    [f"Missing CE Broker fields: {', '.join(missing_fields)}"]
-                    if missing_fields
-                    else []
-                ),
+                "file_info": upload_result,
+                "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
+                "ai_parsing_enabled": True,
+                "parsing_result": parsing_result,
+                "upload_status": {
+                    "storage_tier": storage_tier,
+                    "is_premium": has_subscription,
+                },
             }
 
         else:
-            # Non-AI parsing fallback
-            logger.warning("AI parsing disabled, creating basic record")
+            # Create basic CPE record without AI parsing
+            from app.models.cpe_record import CPERecord
+            from datetime import datetime
 
-            # Create mock upload result for non-AI path
-            upload_result = {
-                "success": True,
-                "file_key": file.filename,
-                "filename": file.filename,
-            }
-
-            # Create basic record without AI enhancement
-            cpe_record = create_enhanced_cpe_record_from_parsing(
-                {"parsed_data": {}, "raw_text": ""},  # Empty parsing result
-                file,
-                license_number,
-                current_user,
-                upload_result,
-                "premium",
+            cpe_record = CPERecord(
+                cpa_license_number=license_number,
+                user_id=current_user.id,
+                document_filename=upload_result.get("filename", file.filename),
+                original_filename=file.filename,
+                cpe_credits=0.0,  # To be filled manually
+                ethics_credits=0.0,  # To be filled manually
+                course_title="Manual Entry Required",
+                provider="Unknown Provider",
+                completion_date=datetime.utcnow().date(),
+                storage_tier=storage_tier,  # CRITICAL: Set the correct storage tier
+                created_at=datetime.now(),
             )
 
             db.add(cpe_record)
@@ -411,13 +397,22 @@ async def upload_certificate_authenticated(
 
             return {
                 "success": True,
-                "message": "Certificate uploaded (manual entry required)",
-                "record_id": cpe_record.id,
+                "message": "✅ Certificate uploaded successfully (manual entry required)",
+                "cpe_record": {
+                    "id": cpe_record.id,
+                    "storage_tier": cpe_record.storage_tier,
+                },
+                "file_info": upload_result,
+                "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
+                "ai_parsing_enabled": False,
+                "upload_status": {
+                    "storage_tier": storage_tier,
+                    "is_premium": has_subscription,
+                },
             }
 
     except Exception as e:
-        logger.error(f"Error in authenticated upload: {str(e)}")
-        logger.exception("Full traceback:")
+        logger.error(f"Error in authenticated upload: {e}")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
