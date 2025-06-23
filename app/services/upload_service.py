@@ -32,90 +32,84 @@ def create_enhanced_cpe_record_from_parsing(
         logger.info(f"Raw text length: {len(raw_text) if raw_text else 0}")
         logger.info(f"Basic parsed data keys: {list(parsed_data.keys())}")
 
-        # CRITICAL FIX: Ensure we have raw text for processing
-        if not raw_text:
-            logger.warning("No raw text available for CE Broker field extraction")
-            # Try to get raw text from parsed data if available
-            raw_text = parsed_data.get("raw_text", "")
+        # 🔥 CRITICAL FIX: Flatten the parsed data first
+        flat_parsed_data = {}
+        for key, value in parsed_data.items():
+            if isinstance(value, dict) and "value" in value:
+                flat_parsed_data[key] = value["value"]
+            else:
+                flat_parsed_data[key] = value
 
-        # Enhance with CE Broker fields
-        enhanced_data = vision_service.enhance_parsed_data(raw_text, parsed_data)
+        # Enhance with CE Broker fields using the flattened data
+        enhanced_data = vision_service.enhance_parsed_data(raw_text, flat_parsed_data)
 
-        logger.info(f"Enhanced data extracted:")
-        logger.info(f"  - course_type: {enhanced_data.get('course_type')}")
-        logger.info(f"  - delivery_method: {enhanced_data.get('delivery_method')}")
-        logger.info(f"  - subject_areas: {enhanced_data.get('subject_areas')}")
-        logger.info(f"  - ce_broker_ready: {enhanced_data.get('ce_broker_ready')}")
+        # Parse completion date
+        completion_date_str = flat_parsed_data.get("completion_date", "")
+        parsed_completion_date = None
+        if completion_date_str:
+            try:
+                parsed_completion_date = datetime.fromisoformat(
+                    completion_date_str
+                ).date()
+            except (ValueError, AttributeError):
+                try:
+                    parsed_completion_date = datetime.strptime(
+                        completion_date_str, "%Y-%m-%d"
+                    ).date()
+                except (ValueError, AttributeError):
+                    parsed_completion_date = datetime.utcnow().date()
+        else:
+            parsed_completion_date = datetime.utcnow().date()
 
-        # Create CPE record with all fields
+        # Create CPE record with enhanced data
         cpe_record = CPERecord(
             # Basic fields
             cpa_license_number=license_number,
             user_id=current_user.id if current_user else None,
-            document_filename=upload_result.get("file_key", file.filename),
+            document_filename=upload_result.get("filename", file.filename),
             original_filename=file.filename,
-            # Core CPE data
-            cpe_credits=enhanced_data.get("cpe_credits", 0.0),
-            ethics_credits=enhanced_data.get("ethics_credits", 0.0),
-            course_title=enhanced_data.get("course_title"),
-            provider=enhanced_data.get("provider"),
-            completion_date=enhanced_data.get("completion_date"),
-            certificate_number=enhanced_data.get("certificate_number"),
-            # CE Broker fields - ENSURE THESE ARE SET
+            # Core CPE data - Use the flattened data
+            cpe_credits=float(enhanced_data.get("cpe_credits", 0.0)),
+            ethics_credits=float(enhanced_data.get("ethics_credits", 0.0)),
+            course_title=enhanced_data.get("course_title", "Manual Entry Required"),
+            provider=enhanced_data.get("provider", "Unknown Provider"),
+            completion_date=parsed_completion_date,
+            certificate_number=enhanced_data.get("certificate_number", ""),
+            # CE Broker fields
             course_type=enhanced_data.get("course_type"),
             delivery_method=enhanced_data.get("delivery_method"),
             instructional_method=enhanced_data.get("instructional_method"),
-            subject_areas=enhanced_data.get(
-                "subject_areas", []
-            ),  # Default to empty list
+            subject_areas=enhanced_data.get("subject_areas", []),
             field_of_study=enhanced_data.get("field_of_study"),
             ce_category=enhanced_data.get("ce_category"),
             nasba_sponsor_number=enhanced_data.get("nasba_sponsor_number"),
             course_code=enhanced_data.get("course_code"),
             program_level=enhanced_data.get("program_level"),
             ce_broker_ready=enhanced_data.get("ce_broker_ready", False),
-            # Parsing metadata
-            confidence_score=parsing_result.get("confidence_score", 0.0),
-            parsing_method=parsing_result.get("parsing_method", "google_vision"),
-            raw_text=raw_text,
-            parsing_notes=parsing_result.get("notes"),
             # System fields
+            confidence_score=parsing_result.get("confidence_score", 0.0),
+            parsing_method=(
+                "google_vision"
+                if parsing_result and parsing_result.get("success")
+                else "manual"
+            ),
+            raw_text=raw_text,
             storage_tier=storage_tier,
-            created_at=datetime.now(),
+            is_verified=False,
+            created_at=datetime.utcnow(),
         )
 
-        # ADDITIONAL FIX: Force update CE Broker readiness after creation
-        if hasattr(cpe_record, "update_ce_broker_fields"):
-            cpe_record.update_ce_broker_fields()
-
-        logger.info(f"CPE record created with CE Broker fields:")
-        logger.info(f"  - Final course_type: {cpe_record.course_type}")
-        logger.info(f"  - Final delivery_method: {cpe_record.delivery_method}")
-        logger.info(f"  - Final subject_areas: {cpe_record.subject_areas}")
-        logger.info(f"  - Final ce_broker_ready: {cpe_record.ce_broker_ready}")
+        logger.info(f"Enhanced CPE record created:")
+        logger.info(f"  - course_title: {cpe_record.course_title}")
+        logger.info(f"  - provider: {cpe_record.provider}")
+        logger.info(f"  - cpe_credits: {cpe_record.cpe_credits}")
 
         return cpe_record
 
     except Exception as e:
-        logger.error(f"Error in enhanced CPE record creation: {str(e)}")
+        logger.error(f"Enhancement failed: {str(e)}")
         logger.exception("Full traceback:")
-
-        # Fallback: create basic record without enhancement
-        return CPERecord(
-            cpa_license_number=license_number,
-            user_id=current_user.id if current_user else None,
-            document_filename=upload_result.get("file_key", file.filename),
-            original_filename=file.filename,
-            cpe_credits=parsed_data.get("cpe_credits", 0.0),
-            ethics_credits=parsed_data.get("ethics_credits", 0.0),
-            course_title=parsed_data.get("course_title"),
-            provider=parsed_data.get("provider"),
-            completion_date=parsed_data.get("completion_date"),
-            certificate_number=parsed_data.get("certificate_number"),
-            raw_text=raw_text,
-            storage_tier=storage_tier,
-            created_at=datetime.now(),
-        )
+        raise
 
 
 def debug_ce_broker_extraction(raw_text: str, parsed_data: Dict) -> Dict:
