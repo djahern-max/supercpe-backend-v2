@@ -1,562 +1,636 @@
-# app/services/vision_service.py - IMPROVED VERSION FOR CPE CERTIFICATE PARSING
+# app/api/uploads.py - Simplified Vision Service Upload API
+"""
+Simplified SuperCPE Upload API
 
+Core functionality:
+- File upload and validation
+- AI processing with Google Vision API
+- Document storage and retrieval
+- Basic authentication and error handling
+"""
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    UploadFile,
+    File,
+    HTTPException,
+    BackgroundTasks,
+)
+from sqlalchemy.orm import Session
+from typing import Dict, Optional
 import logging
-import re
-from typing import Dict, List, Optional, Union
-from datetime import datetime, date
 import tempfile
 import os
+from datetime import datetime
 
+# Core imports
+from app.core.database import get_db
+from app.services.jwt_service import get_current_user
+from app.models.user import User
+from app.models.cpe_record import CPERecord
+
+# Service imports
+from app.services.vision_service import EnhancedVisionService
+from app.services.document_storage import DocumentStorageService
+
+# Configure logging
 logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/upload", tags=["Upload"])
+
+# ===== CONSTANTS =====
+ALLOWED_FILE_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/jpg"]
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+FREE_UPLOAD_LIMIT = 10
+
+# ===== UTILITY FUNCTIONS =====
 
 
-class EnhancedVisionService:
-    """Enhanced Vision Service for CPE Certificate parsing with improved extraction"""
+def get_processing_quality(confidence_score: float) -> str:
+    """Determine processing quality based on confidence score"""
+    if confidence_score >= 0.8:
+        return "excellent"
+    elif confidence_score >= 0.6:
+        return "good"
+    elif confidence_score >= 0.4:
+        return "moderate"
+    else:
+        return "manual_review_needed"
 
-    def __init__(self):
-        """Initialize the Enhanced Vision Service with Google Vision API"""
-        try:
-            from google.cloud import vision
 
-            # Initialize Google Vision client
-            self.vision_client = vision.ImageAnnotatorClient()
-            logger.info("Google Vision API client initialized successfully")
+def validate_file(file: UploadFile) -> None:
+    """Validate uploaded file type and size"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
 
-        except Exception as e:
-            logger.error(f"Failed to initialize Google Vision API: {e}")
-            self.vision_client = None
+    if file.content_type not in ALLOWED_FILE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type {file.content_type} not supported. Please upload PDF or image files.",
+        )
 
-    def extract_text_from_file(self, file_content: bytes, content_type: str) -> str:
-        """Extract text from uploaded file using Google Vision API"""
-        try:
-            if not self.vision_client:
-                logger.error("Google Vision client not initialized")
-                return ""
+    # Check file size
+    if hasattr(file, "size") and file.size > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
 
-            logger.info(f"Processing file with content type: {content_type}")
 
-            # Create Vision API image object
-            from google.cloud import vision
+async def process_with_vision_ai(file: UploadFile, license_number: str) -> Dict:
+    """Process file with Google Vision API - REAL EXTRACTION ONLY"""
+    try:
+        logger.info(f"Starting REAL AI processing for {file.filename}")
 
-            image = vision.Image(content=file_content)
+        # Initialize vision service
+        vision_service = EnhancedVisionService()
 
-            # CRITICAL FIX: Specify features explicitly
-            features = [vision.Feature(type_=vision.Feature.Type.TEXT_DETECTION)]
+        # Read file content
+        file_content = await file.read()
+        await file.seek(0)  # Reset file pointer
 
-            # Create the request with image and features
-            request = vision.AnnotateImageRequest(image=image, features=features)
-
-            # Make the API call
-            response = self.vision_client.annotate_image(request=request)
-
-            if response.error.message:
-                logger.error(f"Google Vision API error: {response.error.message}")
-                return ""
-
-            # Extract text from response
-            if response.text_annotations:
-                extracted_text = response.text_annotations[0].description
-                logger.info(f"Successfully extracted {len(extracted_text)} characters")
-                logger.debug(f"Extracted text preview: {extracted_text[:200]}...")
-                return extracted_text
-            else:
-                logger.warning("No text found in document")
-                return ""
-
-        except Exception as e:
-            logger.error(f"Google Vision text extraction failed: {e}")
-            return ""
-
-    def parse_certificate_data(self, raw_text: str, filename: str) -> Dict:
-        """Parse structured data from raw certificate text - IMPROVED VERSION"""
+        # Extract text using Google Vision API - FORCE REAL PROCESSING
+        raw_text = vision_service.extract_text_from_file(
+            file_content, file.content_type
+        )
 
         if not raw_text:
-            logger.warning("No raw text available for parsing")
-            return self._create_empty_parse_result()
-
-        try:
-            logger.info("Starting enhanced certificate parsing...")
-            logger.debug(f"Raw text to parse: {raw_text[:500]}...")
-
-            # Extract all fields using improved patterns
-            cpe_credits = self._extract_cpe_credits(raw_text)
-            ethics_credits = self._extract_ethics_credits(raw_text)
-            course_title = self._extract_course_title(raw_text)
-            provider = self._extract_provider(raw_text)
-            completion_date = self._extract_completion_date(raw_text)
-            certificate_number = self._extract_certificate_number(raw_text)
-            course_code = self._extract_course_code(raw_text)
-            field_of_study = self._extract_field_of_study(raw_text)
-            instructional_method = self._extract_instructional_method(raw_text)
-            nasba_sponsor = self._extract_nasba_sponsor(raw_text)
-
-            # Calculate confidence score
-            confidence_score = self._calculate_confidence_score(
-                {
-                    "cpe_credits": cpe_credits,
-                    "course_title": course_title,
-                    "provider": provider,
-                    "completion_date": completion_date,
-                }
+            logger.error("No text extracted from Vision API")
+            raise HTTPException(
+                status_code=500, detail="Failed to extract text from certificate"
             )
 
-            result = {
-                "cpe_credits": cpe_credits,
-                "ethics_credits": ethics_credits,
-                "course_title": course_title,
-                "provider": provider,
-                "completion_date": completion_date,
-                "certificate_number": certificate_number,
-                "course_code": course_code,
-                "field_of_study": field_of_study,
-                "instructional_method": instructional_method,
-                "nasba_sponsor": nasba_sponsor,
-                "confidence_score": confidence_score,
+        logger.info(f"Successfully extracted {len(raw_text)} characters of text")
+        logger.info(f"Raw text preview: {raw_text[:500]}...")
+
+        # Parse certificate data
+        parsed_data = vision_service.parse_certificate_data(raw_text, file.filename)
+
+        # Return structured result with REAL data
+        return {
+            "success": True,
+            "parsed_data": {
+                "cpe_hours": parsed_data.get("cpe_credits", 0.0),
+                "ethics_hours": parsed_data.get("ethics_credits", 0.0),
+                "course_title": parsed_data.get("course_title", ""),
+                "provider": parsed_data.get("provider", ""),
+                "completion_date": parsed_data.get("completion_date", ""),
+                "certificate_number": parsed_data.get("certificate_number", ""),
+            },
+            "confidence_score": parsed_data.get("confidence_score", 0.0),
+            "raw_text": raw_text,
+            "processing_method": "google_vision_api_real",
+        }
+
+    except Exception as e:
+        logger.error(f"REAL AI processing failed: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Vision API processing failed: {str(e)}"
+        )
+
+
+def create_mock_certificate_data(filename: str, raw_text: str = "") -> Dict:
+    """REMOVED - NO MORE MOCK DATA"""
+    raise HTTPException(
+        status_code=500, detail="Mock data disabled - Vision API must work"
+    )
+
+
+def create_cpe_record(
+    parsing_result: Dict,
+    file: UploadFile,
+    license_number: str,
+    current_user: User,
+    upload_result: Dict,
+    db: Session,
+) -> CPERecord:
+    """Create CPE record from parsing results using correct field names"""
+    try:
+        parsed_data = parsing_result.get("parsed_data", {})
+
+        # Handle completion_date properly - convert empty string to None
+        completion_date_str = parsed_data.get("completion_date", "")
+        completion_date = None
+        if completion_date_str and completion_date_str.strip():
+            try:
+                # Try to parse the date if it's not empty
+                from datetime import datetime as dt
+
+                completion_date = dt.strptime(
+                    completion_date_str.strip(), "%Y-%m-%d"
+                ).date()
+            except (ValueError, AttributeError):
+                # If parsing fails, leave as None
+                completion_date = None
+
+        # Create new CPE record with correct field names from your model
+        cpe_record = CPERecord(
+            cpa_license_number=license_number,
+            user_id=current_user.id,
+            # Document info - use correct field names
+            document_filename=upload_result.get("filename"),
+            original_filename=file.filename,
+            # Core CPE data - use your model's field names
+            cpe_credits=float(
+                parsed_data.get("cpe_hours", 0)
+            ),  # Note: mapping cpe_hours -> cpe_credits
+            ethics_credits=float(
+                parsed_data.get("ethics_hours", 0)
+            ),  # Note: mapping ethics_hours -> ethics_credits
+            course_title=parsed_data.get("course_title", ""),
+            provider=parsed_data.get("provider", ""),
+            completion_date=completion_date,  # Now properly handled as None or valid date
+            certificate_number=parsed_data.get("certificate_number", ""),
+            # Parsing metadata
+            confidence_score=parsing_result.get("confidence_score", 0.0),
+            parsing_method=parsing_result.get("processing_method", "google_vision_api"),
+            raw_text=parsing_result.get("raw_text", ""),
+            # System fields
+            created_at=datetime.utcnow(),
+        )
+
+        db.add(cpe_record)
+        db.commit()
+        db.refresh(cpe_record)
+
+        return cpe_record
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create CPE record: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save record: {str(e)}")
+
+
+# ===== API ENDPOINTS =====
+
+
+@router.post("/upload-certificate-authenticated/{license_number}")
+async def upload_certificate_authenticated(
+    license_number: str,
+    file: UploadFile = File(...),
+    parse_with_ai: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    AUTHENTICATED UPLOAD: Upload and process a CPE certificate with display data
+
+    - Validates file type and size
+    - Processes with Google Vision API
+    - Stores document and creates CPE record
+    - Returns detailed certificate display information
+    """
+
+    # Validate user permissions
+    if current_user.license_number != license_number:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Validate file
+    validate_file(file)
+
+    try:
+        # Initialize storage service
+        storage_service = DocumentStorageService()
+
+        # Step 1: Store the document using the correct method
+        logger.info(f"Uploading file: {file.filename}")
+        upload_result = await storage_service.upload_cpe_certificate(
+            file, license_number
+        )
+
+        if not upload_result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=f"File upload failed: {upload_result.get('error')}",
+            )
+
+        # Step 2: Process with AI if requested
+        if parse_with_ai:
+            logger.info(f"Processing with AI: {file.filename}")
+            parsing_result = await process_with_vision_ai(file, license_number)
+        else:
+            # Basic result if AI processing is skipped
+            parsing_result = {
+                "success": True,
+                "parsed_data": {
+                    "cpe_hours": 0.0,
+                    "ethics_hours": 0.0,
+                    "course_title": "",
+                    "provider": "",
+                    "completion_date": "",
+                    "certificate_number": "",
+                },
+                "confidence_score": 0.0,
+                "raw_text": "",
+                "processing_method": "manual_entry_required",
             }
 
-            logger.info(f"Parsing completed with confidence: {confidence_score:.2f}")
-            logger.info(f"Extracted data summary:")
-            logger.info(f"  - CPE Credits: {cpe_credits}")
-            logger.info(f"  - Course: '{course_title}'")
-            logger.info(f"  - Provider: '{provider}'")
-            logger.info(f"  - Date: '{completion_date}'")
-            logger.info(f"  - Field of Study: '{field_of_study}'")
-            logger.info(f"  - Course Code: '{course_code}'")
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Certificate parsing failed: {e}")
-            return self._create_empty_parse_result()
-
-    def _extract_cpe_credits(self, text: str) -> float:
-        """Extract CPE credit hours from text - IMPROVED"""
-        patterns = [
-            # "CPE Credits: 18.00" format
-            r"CPE\s*Credits?[:\s]*(\d+(?:\.\d+)?)",
-            # "18.00 CPE" format
-            r"(\d+(?:\.\d+)?)\s*CPE",
-            # Generic credit patterns
-            r"(\d+(?:\.\d+)?)\s*(?:cpe|CPE|credit|hours?|hrs?)",
-            r"(?:cpe|CPE|credit|hours?|hrs?)[:\s]*(\d+(?:\.\d+)?)",
-            r"(\d+(?:\.\d+)?)\s*(?:continuing|professional|education)",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                try:
-                    credits = float(matches[0])
-                    logger.info(f"Found CPE credits: {credits}")
-                    return credits
-                except (ValueError, TypeError):
-                    continue
-
-        logger.warning("No CPE credits found")
-        return 0.0
-
-    def _extract_ethics_credits(self, text: str) -> float:
-        """Extract ethics credit hours from text"""
-        patterns = [
-            r"Ethics?[:\s]*(\d+(?:\.\d+)?)",
-            r"(\d+(?:\.\d+)?)\s*Ethics?",
-            r"Professional\s*Ethics?[:\s]*(\d+(?:\.\d+)?)",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                try:
-                    credits = float(matches[0])
-                    logger.info(f"Found ethics credits: {credits}")
-                    return credits
-                except (ValueError, TypeError):
-                    continue
-
-        return 0.0
-
-    def _extract_course_title(self, text: str) -> str:
-        """Extract course title from text - IMPROVED"""
-        # Look for common certificate patterns
-        patterns = [
-            # "for successfully completing [TITLE]"
-            r"for\s+successfully\s+completing\s+(.+?)(?:\n|Course\s*Code|Field\s*of\s*Study|CPE|$)",
-            # "Certificate of Completion" followed by title
-            r"CERTIFICATE\s+OF\s+COMPLETION.+?awarded\s+to.+?for\s+successfully\s+completing\s+(.+?)(?:\n|Course|Field|CPE|$)",
-            # Title before "Course Code"
-            r"(.+?)(?:\s*Course\s*Code[:\s])",
-            # Title on its own line (common pattern)
-            r"\n\s*([A-Z][^0-9\n]{10,80})\s*\n",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE | re.DOTALL)
-            if matches:
-                title = matches[0].strip()
-                # Clean up the title
-                title = re.sub(r"\s+", " ", title)  # Remove extra spaces
-                title = title.replace("\n", " ").strip()
-
-                # Skip if it's too short or contains unwanted patterns
-                if len(title) > 5 and not re.search(
-                    r"(certificate|completion|awarded)", title, re.IGNORECASE
-                ):
-                    logger.info(f"Found course title: '{title}'")
-                    return title
-
-        logger.warning("No course title found")
-        return ""
-
-    def _extract_provider(self, text: str) -> str:
-        """Extract provider/organization from text - IMPROVED"""
-        # Look for common provider patterns
-        patterns = [
-            # MasterCPE, other branded names
-            r"(Master\s*CPE|MasterCPE)",
-            r"(AICPA|CPA\s*Academy|Surgent|Becker|Kaplan)",
-            # Organization patterns
-            r"(?:provider|organization|sponsor)[:\s]*(.+?)(?:\n|$)",
-            # Executive/signature lines often have company names
-            r"Executive\s+Vice\s+President,\s*(.+?)(?:\n|$)",
-            # Look for "Professional [something] Education"
-            r"Professional\s+(.+?)\s+Education",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
-            if matches:
-                provider = matches[0].strip()
-                if len(provider) > 2:
-                    logger.info(f"Found provider: '{provider}'")
-                    return provider
-
-        logger.warning("No provider found")
-        return ""
-
-    def _extract_completion_date(self, text: str) -> str:
-        """Extract completion date from text - IMPROVED"""
-        # Date patterns specific to your certificate format
-        patterns = [
-            # "Date: Monday, June 2, 2025" format
-            r"Date[:\s]*([A-Za-z]+,\s*[A-Za-z]+\s+\d{1,2},\s*\d{4})",
-            # "Monday, June 2, 2025" format
-            r"([A-Za-z]+,\s*[A-Za-z]+\s+\d{1,2},\s*\d{4})",
-            # Standard date formats
-            r"(?:date|completed|completion)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
-            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
-            r"(\d{4}-\d{1,2}-\d{1,2})",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                date_str = matches[0].strip()
-                try:
-                    # Parse different date formats
-                    if "," in date_str and any(
-                        month in date_str
-                        for month in [
-                            "January",
-                            "February",
-                            "March",
-                            "April",
-                            "May",
-                            "June",
-                            "July",
-                            "August",
-                            "September",
-                            "October",
-                            "November",
-                            "December",
-                        ]
-                    ):
-                        # "Monday, June 2, 2025" format
-                        date_str_clean = re.sub(
-                            r"^[A-Za-z]+,\s*", "", date_str
-                        )  # Remove day of week
-                        parsed_date = datetime.strptime(date_str_clean, "%B %d, %Y")
-                    elif "/" in date_str or "-" in date_str:
-                        # Try various numeric formats
-                        date_str = date_str.replace("-", "/")
-                        try:
-                            parsed_date = datetime.strptime(date_str, "%m/%d/%Y")
-                        except ValueError:
-                            parsed_date = datetime.strptime(date_str, "%Y/%m/%d")
-                    else:
-                        continue
-
-                    formatted_date = parsed_date.strftime("%Y-%m-%d")
-                    logger.info(f"Found completion date: {formatted_date}")
-                    return formatted_date
-
-                except ValueError as e:
-                    logger.debug(f"Failed to parse date '{date_str}': {e}")
-                    continue
-
-        logger.warning("No completion date found")
-        return ""
-
-    def _extract_certificate_number(self, text: str) -> str:
-        """Extract certificate number from text"""
-        patterns = [
-            r"(?:certificate|cert|confirmation)(?:\s+#|\s+number|#)[:\s]*([A-Z0-9-]+)",
-            r"#([A-Z0-9-]{4,})",
-            r"Certificate\s*#[:\s]*([A-Z0-9-]+)",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                cert_num = matches[0].strip()
-                logger.info(f"Found certificate number: {cert_num}")
-                return cert_num
-
-        return ""
-
-    def _extract_course_code(self, text: str) -> str:
-        """Extract course code from text - IMPROVED"""
-        patterns = [
-            # "Course Code: M290-2024-01-SSDL" format
-            r"Course\s*Code[:\s]*([A-Z0-9-]+)",
-            # Generic code patterns
-            r"Code[:\s]*([A-Z0-9-]{4,})",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                code = matches[0].strip()
-                logger.info(f"Found course code: {code}")
-                return code
-
-        return ""
-
-    def _extract_field_of_study(self, text: str) -> str:
-        """Extract field of study from text - IMPROVED"""
-        patterns = [
-            # "Field of Study: Taxes" format
-            r"Field\s*of\s*Study[:\s]*([A-Za-z\s]+?)(?:\n|CPE|Date|$)",
-            # Sometimes just listed after course info
-            r"(?:Subject|Topic|Area)[:\s]*([A-Za-z\s]+?)(?:\n|$)",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                field = matches[0].strip()
-                if len(field) > 2:
-                    logger.info(f"Found field of study: '{field}'")
-                    return field
-
-        return ""
-
-    def _extract_instructional_method(self, text: str) -> str:
-        """Extract instructional method from text - IMPROVED"""
-        patterns = [
-            # "Instructional Method: QAS Self-Study" format
-            r"Instructional\s*Method[:\s]*([^\\n]+?)(?:\n|$)",
-            # Common methods
-            r"(QAS\s*Self-Study|Group\s*Study|Live\s*Webinar|On-Demand|Correspondence)",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                method = matches[0].strip()
-                logger.info(f"Found instructional method: '{method}'")
-                return method
-
-        return ""
-
-    def _extract_nasba_sponsor(self, text: str) -> str:
-        """Extract NASBA sponsor number from text - IMPROVED"""
-        patterns = [
-            # "NASBA #112530" format
-            r"NASBA\s*#([0-9]+)",
-            r"NASBA[:\s]*([0-9]+)",
-            # Generic sponsor patterns
-            r"(?:sponsor|NASBA)(?:\s*#|\s*number)[:\s]*([A-Z0-9-]+)",
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                nasba = matches[0].strip()
-                logger.info(f"Found NASBA sponsor: {nasba}")
-                return nasba
-
-        return ""
-
-    def _calculate_confidence_score(self, data: Dict) -> float:
-        """Calculate confidence score based on extracted data quality"""
-        score = 0.0
-
-        # Weight different fields by importance
-        if data.get("cpe_credits", 0) > 0:
-            score += 0.3  # Most important
-        if data.get("course_title", ""):
-            score += 0.25
-        if data.get("provider", ""):
-            score += 0.2
-        if data.get("completion_date", ""):
-            score += 0.25
-
-        return min(score, 1.0)
-
-    def _create_empty_parse_result(self) -> Dict:
-        """Create empty parsing result as fallback"""
-        return {
-            "cpe_credits": 0.0,
-            "ethics_credits": 0.0,
-            "course_title": "",
-            "provider": "",
-            "completion_date": "",
-            "certificate_number": "",
-            "course_code": "",
-            "field_of_study": "",
-            "instructional_method": "",
-            "nasba_sponsor": "",
-            "confidence_score": 0.0,
-        }
-
-    # Enhanced CE Broker field extraction methods
-    def enhance_parsed_data(self, raw_text: str, parsed_data: Dict) -> Dict:
-        """Enhance parsed data with CE Broker specific fields"""
-        logger.info("Enhancing parsed data with CE Broker fields...")
-
-        # Start with the basic parsed data
-        enhanced_data = parsed_data.copy()
-
-        # Extract additional CE Broker fields
-        ce_broker_fields = self.extract_ce_broker_fields(raw_text, parsed_data)
-
-        # Merge the fields
-        enhanced_data.update(ce_broker_fields)
-
-        return enhanced_data
-
-    def extract_ce_broker_fields(self, raw_text: str, parsed_data: Dict) -> Dict:
-        """Extract CE Broker specific fields from certificate text"""
-
-        # Get basic fields
-        course_title = parsed_data.get("course_title", "")
-        field_of_study = parsed_data.get("field_of_study", "")
-        instructional_method = parsed_data.get("instructional_method", "")
-
-        # Determine course type (anytime vs live)
-        course_type = self._determine_course_type(instructional_method, raw_text)
-
-        # Determine delivery method
-        delivery_method = self._determine_delivery_method(
-            instructional_method, raw_text
+        # Step 3: Create CPE record
+        logger.info(f"Creating CPE record for: {file.filename}")
+        cpe_record = create_cpe_record(
+            parsing_result, file, license_number, current_user, upload_result, db
         )
 
-        # Map field of study to subject areas
-        subject_areas = self._map_subject_areas(field_of_study)
-
-        # Determine CE category
-        ce_category = self._determine_ce_category(subject_areas, course_title)
-
-        # Check if CE Broker ready
-        ce_broker_ready = self._check_ce_broker_readiness(
-            parsed_data,
-            {
-                "course_type": course_type,
-                "delivery_method": delivery_method,
-                "subject_areas": subject_areas,
+        # Return success response with detailed certificate display data
+        return {
+            "success": True,
+            "message": "Certificate uploaded and processed successfully",
+            "data": {
+                "record_id": cpe_record.id,
+                "filename": file.filename,
+                "parsed_data": parsing_result["parsed_data"],
+                "confidence_score": parsing_result["confidence_score"],
+                "document_url": upload_result.get("file_url"),
+                # Additional display data for immediate viewing
+                "certificate_display": {
+                    "course_title": cpe_record.course_title,
+                    "provider": cpe_record.provider,
+                    "cpe_hours": float(
+                        cpe_record.cpe_credits
+                    ),  # Map back to frontend expectation
+                    "ethics_hours": float(
+                        cpe_record.ethics_credits
+                    ),  # Map back to frontend expectation
+                    "completion_date": cpe_record.completion_date,
+                    "certificate_number": cpe_record.certificate_number,
+                    "processing_quality": get_processing_quality(
+                        parsing_result["confidence_score"]
+                    ),
+                    "extracted_text_preview": (
+                        parsing_result.get("raw_text", "")[:500] + "..."
+                        if len(parsing_result.get("raw_text", "")) > 500
+                        else parsing_result.get("raw_text", "")
+                    ),
+                    "file_info": {
+                        "filename": file.filename,
+                        "content_type": file.content_type,
+                        "upload_timestamp": datetime.utcnow().isoformat(),
+                    },
+                },
             },
+        }
+
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@router.post("/certificate/{license_number}")
+async def upload_certificate_simple(
+    license_number: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Upload and process a CPE certificate
+
+    - Validates file type and size
+    - Processes with Google Vision API
+    - Stores document and creates CPE record
+    """
+
+    # Validate user permissions
+    if current_user.license_number != license_number:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Validate file
+    validate_file(file)
+
+    try:
+        # Initialize storage service
+        storage_service = DocumentStorageService()
+
+        # Step 1: Store the document
+        logger.info(f"Uploading file: {file.filename}")
+        upload_result = storage_service.store_document(
+            file, license_number, "certificate"
         )
 
+        if not upload_result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=f"File upload failed: {upload_result.get('error')}",
+            )
+
+        # Step 2: Process with AI
+        logger.info(f"Processing with AI: {file.filename}")
+        parsing_result = await process_with_vision_ai(file, license_number)
+
+        # Step 3: Create CPE record
+        logger.info(f"Creating CPE record for: {file.filename}")
+        cpe_record = create_cpe_record(
+            parsing_result, file, license_number, current_user, upload_result, db
+        )
+
+        # Return success response with detailed certificate display data
         return {
-            "course_type": course_type,
-            "delivery_method": delivery_method,
-            "instructional_method": instructional_method,
-            "subject_areas": subject_areas,
-            "field_of_study": field_of_study,
-            "ce_category": ce_category,
-            "ce_broker_ready": ce_broker_ready,
+            "success": True,
+            "message": "Certificate uploaded and processed successfully",
+            "data": {
+                "record_id": cpe_record.id,
+                "filename": file.filename,
+                "parsed_data": parsing_result["parsed_data"],
+                "confidence_score": parsing_result["confidence_score"],
+                "document_url": upload_result.get("url"),
+                # Additional display data for immediate viewing
+                "certificate_display": {
+                    "course_title": cpe_record.course_title,
+                    "provider": cpe_record.provider,
+                    "cpe_hours": float(cpe_record.cpe_hours),
+                    "ethics_hours": float(cpe_record.ethics_hours),
+                    "completion_date": cpe_record.completion_date,
+                    "certificate_number": cpe_record.certificate_number,
+                    "processing_quality": get_processing_quality(
+                        parsing_result["confidence_score"]
+                    ),
+                    "extracted_text_preview": (
+                        parsing_result.get("raw_text", "")[:500] + "..."
+                        if len(parsing_result.get("raw_text", "")) > 500
+                        else parsing_result.get("raw_text", "")
+                    ),
+                    "file_info": {
+                        "filename": file.filename,
+                        "content_type": file.content_type,
+                        "upload_timestamp": datetime.utcnow().isoformat(),
+                    },
+                },
+            },
         }
 
-    def _determine_course_type(self, instructional_method: str, raw_text: str) -> str:
-        """Determine if course is 'live' or 'anytime' for CE Broker"""
-        if not instructional_method:
-            return "anytime"  # Default
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-        method_lower = instructional_method.lower()
-        if "live" in method_lower or "webinar" in method_lower:
-            return "live"
-        else:
-            return "anytime"
 
-    def _determine_delivery_method(
-        self, instructional_method: str, raw_text: str
-    ) -> str:
-        """Determine delivery method for CE Broker"""
-        if not instructional_method:
-            return "Computer-Based Training"  # Default
+@router.get("/certificates/{license_number}")
+async def get_certificates(
+    license_number: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get all certificates for a license number with detailed display information"""
 
-        method_lower = instructional_method.lower()
-        if "self-study" in method_lower or "computer" in method_lower:
-            return "Computer-Based Training"
-        elif "webinar" in method_lower or "broadcast" in method_lower:
-            return "Prerecorded Broadcast"
-        elif "correspondence" in method_lower:
-            return "Correspondence"
-        else:
-            return "Computer-Based Training"
+    # Validate user permissions
+    if current_user.license_number != license_number:
+        raise HTTPException(status_code=403, detail="Access denied")
 
-    def _map_subject_areas(self, field_of_study: str) -> List[str]:
-        """Map field of study to CE Broker subject areas"""
-        if not field_of_study:
-            return []
+    # Query certificates
+    certificates = (
+        db.query(CPERecord)
+        .filter(
+            CPERecord.cpa_license_number == license_number,
+            CPERecord.user_id == current_user.id,
+        )
+        .order_by(CPERecord.created_at.desc())
+        .all()
+    )
 
-        field_lower = field_of_study.lower()
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": cert.id,
+                "course_title": cert.course_title,
+                "provider": cert.provider,
+                "cpe_hours": cert.cpe_credits,  # Map to frontend expectation
+                "ethics_hours": cert.ethics_credits,  # Map to frontend expectation
+                "completion_date": cert.completion_date,
+                "certificate_number": cert.certificate_number,
+                "confidence_score": cert.confidence_score,
+                "document_filename": cert.document_filename,
+                "created_at": cert.created_at,
+                "updated_at": cert.updated_at,
+                # Enhanced display data
+                "certificate_display": {
+                    "processing_quality": get_processing_quality(
+                        cert.confidence_score or 0.0
+                    ),
+                    "has_ethics": bool(cert.ethics_credits and cert.ethics_credits > 0),
+                    "total_credits": float(cert.cpe_credits or 0)
+                    + float(cert.ethics_credits or 0),
+                    "file_type": (
+                        cert.document_filename.split(".")[-1].upper()
+                        if cert.document_filename
+                        else "UNKNOWN"
+                    ),
+                    "extracted_text_preview": (
+                        cert.raw_text[:200] + "..."
+                        if cert.raw_text and len(cert.raw_text) > 200
+                        else cert.raw_text
+                    ),
+                },
+            }
+            for cert in certificates
+        ],
+        "total": len(certificates),
+        "summary": {
+            "total_cpe_hours": sum(
+                float(cert.cpe_credits or 0) for cert in certificates
+            ),
+            "total_ethics_hours": sum(
+                float(cert.ethics_credits or 0) for cert in certificates
+            ),
+            "certificates_count": len(certificates),
+            "high_confidence_count": len(
+                [
+                    cert
+                    for cert in certificates
+                    if cert.confidence_score and cert.confidence_score >= 0.8
+                ]
+            ),
+        },
+    }
 
-        # Map common fields to CE Broker categories
-        mapping = {
-            "taxes": ["Taxes"],
-            "tax": ["Taxes"],
-            "taxation": ["Taxes"],
-            "accounting": ["Accounting"],
-            "auditing": ["Auditing"],
-            "audit": ["Auditing"],
-            "finance": ["Finance"],
-            "financial": ["Finance"],
-            "ethics": ["Administrative practices"],
-            "business law": ["Business law"],
-            "law": ["Business law"],
+
+@router.get("/certificate/{record_id}/details")
+async def get_certificate_details(
+    record_id: int,
+    license_number: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get detailed information about a specific certificate for display"""
+
+    # Find the record
+    cpe_record = db.query(CPERecord).filter(CPERecord.id == record_id).first()
+    if not cpe_record:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+
+    # Validate permissions
+    if (
+        cpe_record.cpa_license_number != license_number
+        or cpe_record.user_id != current_user.id
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return {
+        "success": True,
+        "data": {
+            "id": cpe_record.id,
+            "course_title": cpe_record.course_title,
+            "provider": cpe_record.provider,
+            "cpe_hours": cpe_record.cpe_credits,  # Map to frontend expectation
+            "ethics_hours": cpe_record.ethics_credits,  # Map to frontend expectation
+            "completion_date": cpe_record.completion_date,
+            "certificate_number": cpe_record.certificate_number,
+            "confidence_score": cpe_record.confidence_score,
+            "document_url": cpe_record.document_url,
+            "document_filename": cpe_record.document_filename,
+            "raw_extracted_text": cpe_record.raw_text,  # Use correct field name
+            "created_at": cpe_record.created_at,
+            "updated_at": cpe_record.updated_at,
+            # Enhanced display information
+            "display_info": {
+                "processing_quality": get_processing_quality(
+                    cpe_record.confidence_score or 0.0
+                ),
+                "has_ethics": bool(
+                    cpe_record.ethics_credits and cpe_record.ethics_credits > 0
+                ),
+                "total_credits": float(cpe_record.cpe_credits or 0)
+                + float(cpe_record.ethics_credits or 0),
+                "file_type": (
+                    cpe_record.document_filename.split(".")[-1].upper()
+                    if cpe_record.document_filename
+                    else "UNKNOWN"
+                ),
+                "text_length": len(cpe_record.raw_text) if cpe_record.raw_text else 0,
+                "has_certificate_number": bool(cpe_record.certificate_number),
+                "completion_date_formatted": (
+                    cpe_record.completion_date.strftime("%B %d, %Y")
+                    if cpe_record.completion_date
+                    else None
+                ),
+            },
+        },
+    }
+
+
+@router.delete("/certificate/{record_id}")
+async def delete_certificate(
+    record_id: int,
+    license_number: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a CPE certificate record and its file"""
+
+    # Find the record
+    cpe_record = db.query(CPERecord).filter(CPERecord.id == record_id).first()
+    if not cpe_record:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+
+    # Validate permissions
+    if (
+        cpe_record.cpa_license_number != license_number
+        or cpe_record.user_id != current_user.id
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        # Delete file from storage
+        storage_service = DocumentStorageService()
+        if cpe_record.document_filename:
+            deletion_result = storage_service.delete_file(cpe_record.document_filename)
+            logger.info(f"Storage deletion result: {deletion_result}")
+
+        # Delete database record
+        db.delete(cpe_record)
+        db.commit()
+
+        return {
+            "success": True,
+            "message": "Certificate deleted successfully",
         }
 
-        for key, subjects in mapping.items():
-            if key in field_lower:
-                return subjects
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
-        # Default to Finance if no match
-        return ["Finance"]
 
-    def _determine_ce_category(
-        self, subject_areas: List[str], course_title: str
-    ) -> str:
-        """Determine CE category for CE Broker"""
-        if "Administrative practices" in subject_areas:
-            title_lower = course_title.lower() if course_title else ""
-            if "ethics" in title_lower or "professional responsibility" in title_lower:
-                return "Professional Ethics CPE"
+@router.get("/status/{license_number}")
+async def get_upload_status(
+    license_number: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get upload status and limits for user"""
 
-        return "General CPE"
+    # Validate permissions
+    if current_user.license_number != license_number:
+        raise HTTPException(status_code=403, detail="Access denied")
 
-    def _check_ce_broker_readiness(self, parsed_data: Dict, ce_fields: Dict) -> bool:
-        """Check if record has all required fields for CE Broker export"""
-        required_fields = [
-            parsed_data.get("course_title"),
-            parsed_data.get("provider"),
-            parsed_data.get("completion_date"),
-            ce_fields.get("course_type"),
-            ce_fields.get("delivery_method"),
-            ce_fields.get("subject_areas"),
-        ]
+    # Count uploads
+    upload_count = (
+        db.query(CPERecord)
+        .filter(
+            CPERecord.cpa_license_number == license_number,
+            CPERecord.user_id == current_user.id,
+        )
+        .count()
+    )
 
-        # Check if all required fields are present and not empty
-        ready = all(field for field in required_fields if field is not None)
+    return {
+        "success": True,
+        "data": {
+            "uploads_used": upload_count,
+            "uploads_remaining": max(0, FREE_UPLOAD_LIMIT - upload_count),
+            "upload_limit": FREE_UPLOAD_LIMIT,
+            "can_upload": upload_count < FREE_UPLOAD_LIMIT,
+        },
+    }
 
-        return ready
+
+@router.get("/health")
+async def health_check():
+    """Simple health check endpoint"""
+    return {
+        "success": True,
+        "message": "Upload service is healthy",
+        "timestamp": datetime.utcnow(),
+    }

@@ -75,58 +75,40 @@ def validate_file(file: UploadFile) -> None:
 
 
 async def process_with_vision_ai(file: UploadFile, license_number: str) -> Dict:
-    """Process file with Google Vision API with proper error handling and PDF support"""
+    """Process file with Google Vision API - REAL EXTRACTION ONLY"""
     try:
-        logger.info(f"Starting AI processing for {file.filename}")
+        logger.info(f"Starting REAL AI processing for {file.filename}")
 
-        # Check if file is PDF - Vision API needs special handling for PDFs
-        if file.content_type == "application/pdf":
-            logger.warning(
-                f"PDF file detected: {file.filename}. Vision API requires image conversion for PDFs."
-            )
-            # For now, return mock data for PDFs since Vision API setup needs work
-            return create_mock_certificate_data(file.filename)
-
-        # Initialize vision service for images only
+        # Initialize vision service
         vision_service = EnhancedVisionService()
 
         # Read file content
         file_content = await file.read()
         await file.seek(0)  # Reset file pointer
 
-        # Extract text using Google Vision API
-        try:
-            raw_text = vision_service.extract_text_from_file(
-                file_content, file.content_type
+        # Extract text using Google Vision API - FORCE REAL PROCESSING
+        raw_text = vision_service.extract_text_from_file(
+            file_content, file.content_type
+        )
+
+        if not raw_text:
+            logger.error("No text extracted from Vision API")
+            raise HTTPException(
+                status_code=500, detail="Failed to extract text from certificate"
             )
-            logger.info(f"Successfully extracted {len(raw_text)} characters of text")
-        except Exception as vision_error:
-            logger.error(f"Google Vision API failed: {vision_error}")
-            # For images that fail Vision API, also return mock data for demo
-            return create_mock_certificate_data(file.filename)
 
-        # Parse certificate data (handle empty text gracefully)
-        if raw_text:
-            try:
-                parsed_data = vision_service.parse_certificate_data(
-                    raw_text, file.filename
-                )
-            except Exception as parse_error:
-                logger.error(f"Parsing failed: {parse_error}")
-                # Fallback to mock data with real extracted text
-                return create_mock_certificate_data(file.filename, raw_text)
-        else:
-            # No text extracted, return mock data
-            return create_mock_certificate_data(file.filename)
+        logger.info(f"Successfully extracted {len(raw_text)} characters of text")
+        logger.info(f"Raw text preview: {raw_text[:500]}...")
 
-        # Return structured result
+        # Parse certificate data
+        parsed_data = vision_service.parse_certificate_data(raw_text, file.filename)
+
+        # Return structured result with REAL data
         return {
             "success": True,
             "parsed_data": {
-                "cpe_hours": parsed_data.get("cpe_credits", 0.0),  # Map for frontend
-                "ethics_hours": parsed_data.get(
-                    "ethics_credits", 0.0
-                ),  # Map for frontend
+                "cpe_hours": parsed_data.get("cpe_credits", 0.0),
+                "ethics_hours": parsed_data.get("ethics_credits", 0.0),
                 "course_title": parsed_data.get("course_title", ""),
                 "provider": parsed_data.get("provider", ""),
                 "completion_date": parsed_data.get("completion_date", ""),
@@ -134,46 +116,21 @@ async def process_with_vision_ai(file: UploadFile, license_number: str) -> Dict:
             },
             "confidence_score": parsed_data.get("confidence_score", 0.0),
             "raw_text": raw_text,
-            "processing_method": "google_vision_api",
+            "processing_method": "google_vision_api_real",
         }
 
     except Exception as e:
-        logger.error(f"AI processing failed: {e}")
-        # Return mock data instead of failing
-        return create_mock_certificate_data(file.filename)
+        logger.error(f"REAL AI processing failed: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Vision API processing failed: {str(e)}"
+        )
 
 
 def create_mock_certificate_data(filename: str, raw_text: str = "") -> Dict:
-    """Create mock certificate data for demonstration while Vision API is being fixed"""
-
-    # Extract some basic info from filename for demo
-    file_base = (
-        filename.lower().replace(".pdf", "").replace(".jpg", "").replace(".png", "")
+    """REMOVED - NO MORE MOCK DATA"""
+    raise HTTPException(
+        status_code=500, detail="Mock data disabled - Vision API must work"
     )
-
-    # Create realistic mock data based on filename
-    mock_data = {
-        "success": True,
-        "parsed_data": {
-            "cpe_hours": 8.0,  # Reasonable default
-            "ethics_hours": 2.0,  # Common ethics requirement
-            "course_title": f"Professional Development Course - {file_base.title()}",
-            "provider": "AICPA Professional Education",
-            "completion_date": "2024-12-15",  # Recent date
-            "certificate_number": f"CERT-{file_base[:8].upper()}-2024",
-        },
-        "confidence_score": 0.85,  # High confidence for demo
-        "raw_text": raw_text
-        or f"Certificate of Completion\n\nThis certifies that the participant has successfully completed:\n{file_base.title()}\n\nCPE Credits: 8.0\nEthics Credits: 2.0\nCompletion Date: December 15, 2024\nProvider: AICPA\n\n[Mock extracted text for demo purposes]",
-        "processing_method": "mock_data_for_demo",
-    }
-
-    logger.info(f"Created mock certificate data for {filename}:")
-    logger.info(f"  - Course: {mock_data['parsed_data']['course_title']}")
-    logger.info(f"  - CPE Hours: {mock_data['parsed_data']['cpe_hours']}")
-    logger.info(f"  - Provider: {mock_data['parsed_data']['provider']}")
-
-    return mock_data
 
 
 def create_cpe_record(
