@@ -138,7 +138,7 @@ def create_cpe_record(
             completion_date=parsed_data.get("completion_date"),
             certificate_number=parsed_data.get("certificate_number", ""),
             document_filename=upload_result.get("filename"),
-            document_url=upload_result.get("url"),
+            document_url=upload_result.get("file_url"),
             confidence_score=parsing_result.get("confidence_score", 0.0),
             raw_extracted_text=parsing_result.get("raw_text", ""),
             created_at=datetime.utcnow(),
@@ -188,10 +188,10 @@ async def upload_certificate_authenticated(
         # Initialize storage service
         storage_service = DocumentStorageService()
 
-        # Step 1: Store the document
+        # Step 1: Store the document using the correct method
         logger.info(f"Uploading file: {file.filename}")
-        upload_result = storage_service.store_document(
-            file, license_number, "certificate"
+        upload_result = await storage_service.upload_cpe_certificate(
+            file, license_number
         )
 
         if not upload_result.get("success"):
@@ -236,7 +236,7 @@ async def upload_certificate_authenticated(
                 "filename": file.filename,
                 "parsed_data": parsing_result["parsed_data"],
                 "confidence_score": parsing_result["confidence_score"],
-                "document_url": upload_result.get("url"),
+                "document_url": upload_result.get("file_url"),
                 # Additional display data for immediate viewing
                 "certificate_display": {
                     "course_title": cpe_record.course_title,
@@ -534,7 +534,8 @@ async def delete_certificate(
         # Delete file from storage
         storage_service = DocumentStorageService()
         if cpe_record.document_filename:
-            storage_service.delete_file(cpe_record.document_filename)
+            deletion_result = storage_service.delete_file(cpe_record.document_filename)
+            logger.info(f"Storage deletion result: {deletion_result}")
 
         # Delete database record
         db.delete(cpe_record)
