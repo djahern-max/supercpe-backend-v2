@@ -184,9 +184,9 @@ def create_cpe_record(
         if completion_date_str and completion_date_str.strip():
             try:
                 # Try to parse the date if it's not empty
-                from datetime import datetime
+                from datetime import datetime as dt
 
-                completion_date = datetime.strptime(
+                completion_date = dt.strptime(
                     completion_date_str.strip(), "%Y-%m-%d"
                 ).date()
             except (ValueError, AttributeError):
