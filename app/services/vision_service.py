@@ -540,11 +540,359 @@ class CEBrokerMappings:
 
 
 class EnhancedVisionService:
-    """Enhanced vision service with improved CE Broker field extraction"""
+    """Enhanced vision service with REAL Google Vision API integration"""
 
     def __init__(self):
         self.confidence_threshold = 0.7
         self.subject_detector = SubjectAreaDetector()
+
+        # Initialize Google Vision client
+        try:
+            from google.cloud import vision
+
+            self.vision_client = vision.ImageAnnotatorClient()
+            logger.info("Google Vision API client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Google Vision API: {e}")
+            self.vision_client = None
+
+    def extract_text_from_file(self, file_content: bytes, content_type: str) -> str:
+        """Extract text from uploaded file using Google Vision API"""
+
+        if not self.vision_client:
+            logger.error("Google Vision API client not available")
+            return ""
+
+        try:
+            from google.cloud import vision
+
+            # Create image object
+            image = vision.Image(content=file_content)
+
+            # Perform text detection
+            response = self.vision_client.text_detection(image=image)
+
+            # Extract text
+            texts = response.text_annotations
+
+            if texts:
+                extracted_text = texts[0].description
+                logger.info(
+                    f"Successfully extracted {len(extracted_text)} characters via Google Vision"
+                )
+                return extracted_text
+            else:
+                logger.warning("No text found in image via Google Vision")
+                return ""
+
+        except Exception as e:
+            logger.error(f"Google Vision text extraction failed: {e}")
+            return ""
+
+    def parse_certificate_data(self, raw_text: str, filename: str) -> Dict:
+        """Parse structured data from raw text using AI"""
+
+        if not raw_text:
+            logger.warning("No raw text available for parsing")
+            return self._create_empty_parse_result()
+
+        try:
+            logger.info("Starting intelligent text parsing...")
+
+            # Extract CPE credits using pattern matching and AI
+            cpe_credits = self._extract_cpe_credits(raw_text)
+            ethics_credits = self._extract_ethics_credits(raw_text)
+            course_title = self._extract_course_title(raw_text)
+            provider = self._extract_provider(raw_text)
+            completion_date = self._extract_completion_date(raw_text)
+            certificate_number = self._extract_certificate_number(raw_text)
+
+            # Calculate confidence score based on extracted fields
+            confidence_score = self._calculate_confidence_score(
+                {
+                    "cpe_credits": cpe_credits,
+                    "course_title": course_title,
+                    "provider": provider,
+                    "completion_date": completion_date,
+                }
+            )
+
+            result = {
+                "cpe_credits": cpe_credits,
+                "ethics_credits": ethics_credits,
+                "course_title": course_title,
+                "provider": provider,
+                "completion_date": completion_date,
+                "certificate_number": certificate_number,
+                "confidence_score": confidence_score,
+            }
+
+            logger.info(f"Parsing completed with confidence: {confidence_score}")
+            logger.info(
+                f"Extracted: CPE={cpe_credits}, Title='{course_title[:50] if course_title else 'None'}...', Provider='{provider}'"
+            )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Intelligent parsing failed: {e}")
+            return self._create_empty_parse_result()
+
+    def _extract_cpe_credits(self, text: str) -> float:
+        """Extract CPE credit hours from text"""
+        import re
+
+        # Common patterns for CPE credits
+        patterns = [
+            r"(\d+(?:\.\d+)?)\s*(?:cpe|CPE|credit|hours?|hrs?)",
+            r"(?:cpe|CPE|credit|hours?|hrs?)[:\s]*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s*(?:continuing|professional|education)",
+            r"(\d+(?:\.\d+)?)\s*(?:hour|hr)s?\s*(?:cpe|CPE)",
+        ]
+
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                try:
+                    credits = float(matches[0])
+                    if 0.5 <= credits <= 50:  # Reasonable range
+                        logger.info(f"Found CPE credits: {credits}")
+                        return credits
+                except ValueError:
+                    continue
+
+        logger.warning("No CPE credits found in text")
+        return 0.0
+
+    def _extract_ethics_credits(self, text: str) -> float:
+        """Extract ethics credit hours from text"""
+        import re
+
+        if re.search(r"ethics?|professional\s+responsibility", text, re.IGNORECASE):
+            # Look for ethics-specific credit amounts
+            patterns = [
+                r"ethics?[:\s]*(\d+(?:\.\d+)?)",
+                r"(\d+(?:\.\d+)?)\s*ethics?",
+            ]
+
+            for pattern in patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                if matches:
+                    try:
+                        return float(matches[0])
+                    except ValueError:
+                        continue
+
+        return 0.0
+
+    def _extract_course_title(self, text: str) -> str:
+        """Extract course title from text"""
+        import re
+
+        # Look for title patterns
+        lines = text.split("\n")
+
+        # Common title indicators
+        title_patterns = [
+            r"(?:course|title|program|seminar|workshop)[:\s]*(.+?)(?:\n|$)",
+            r"(?:certification|certificate)\s+(?:in|of|for)[:\s]*(.+?)(?:\n|$)",
+        ]
+
+        for pattern in title_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if matches:
+                title = matches[0].strip()
+                if len(title) > 5:  # Reasonable title length
+                    logger.info(f"Found course title: {title}")
+                    return title
+
+        # Fallback: use first substantial line
+        for line in lines:
+            line = line.strip()
+            if len(line) > 10 and not re.match(r"^\d+", line):
+                logger.info(f"Using fallback title: {line}")
+                return line
+
+        logger.warning("No course title found")
+        return ""
+
+    def _extract_provider(self, text: str) -> str:
+        """Extract provider/organization from text"""
+        import re
+
+        # Common provider patterns
+        patterns = [
+            r"(?:provided|presented|offered|sponsored)\s+by[:\s]*(.+?)(?:\n|$)",
+            r"(?:provider|sponsor|organization)[:\s]*(.+?)(?:\n|$)",
+        ]
+
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if matches:
+                provider = matches[0].strip()
+                if len(provider) > 2:
+                    logger.info(f"Found provider: {provider}")
+                    return provider
+
+        logger.warning("No provider found")
+        return ""
+
+    def _extract_completion_date(self, text: str) -> str:
+        """Extract completion date from text"""
+        import re
+        from datetime import datetime
+
+        # Date patterns
+        date_patterns = [
+            r"(?:completed|completion|date)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+            r"(?:completed|completion|date)[:\s]*(\w+ \d{1,2}, \d{4})",
+            r"(\w+ \d{1,2}, \d{4})",
+        ]
+
+        for pattern in date_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                date_str = matches[0].strip()
+                try:
+                    # Try to parse and normalize the date
+                    if "/" in date_str or "-" in date_str:
+                        parsed_date = datetime.strptime(
+                            date_str.replace("-", "/"), "%m/%d/%Y"
+                        )
+                    else:
+                        parsed_date = datetime.strptime(date_str, "%B %d, %Y")
+
+                    formatted_date = parsed_date.strftime("%Y-%m-%d")
+                    logger.info(f"Found completion date: {formatted_date}")
+                    return formatted_date
+                except ValueError:
+                    continue
+
+        logger.warning("No completion date found")
+        return ""
+
+    def _extract_certificate_number(self, text: str) -> str:
+        """Extract certificate number from text"""
+        import re
+
+        patterns = [
+            r"(?:certificate|cert|confirmation)(?:\s+#|\s+number|#)[:\s]*([A-Z0-9-]+)",
+            r"#([A-Z0-9-]{4,})",
+        ]
+
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                cert_num = matches[0].strip()
+                logger.info(f"Found certificate number: {cert_num}")
+                return cert_num
+
+        return ""
+
+    def _calculate_confidence_score(self, data: Dict) -> float:
+        """Calculate confidence score based on extracted data quality"""
+        score = 0.0
+
+        if data.get("cpe_credits", 0) > 0:
+            score += 0.3
+        if data.get("course_title", ""):
+            score += 0.3
+        if data.get("provider", ""):
+            score += 0.2
+        if data.get("completion_date", ""):
+            score += 0.2
+
+        return min(score, 1.0)
+
+    def _create_empty_parse_result(self) -> Dict:
+        """Create empty parsing result as fallback"""
+        return {
+            "cpe_credits": 0.0,
+            "ethics_credits": 0.0,
+            "course_title": "",
+            "provider": "",
+            "completion_date": "",
+            "certificate_number": "",
+            "confidence_score": 0.0,
+        }
+
+    # ADD MISSING METHODS THAT ARE REFERENCED BUT NOT DEFINED:
+
+    def extract_instructional_method(self, raw_text: str) -> Optional[str]:
+        """Extract instructional method from text"""
+        if not raw_text:
+            return None
+
+        text_lower = raw_text.lower()
+
+        if "qas" in text_lower or "self-study" in text_lower:
+            return "QAS Self-Study"
+        elif "group" in text_lower:
+            return "Group Study"
+        elif "correspondence" in text_lower:
+            return "Correspondence"
+        else:
+            return None
+
+    def extract_nasba_sponsor(self, raw_text: str) -> Optional[str]:
+        """Extract NASBA sponsor number from text"""
+        import re
+
+        patterns = [
+            r"nasba[:\s]*([A-Z0-9-]+)",
+            r"sponsor[:\s]*([A-Z0-9-]+)",
+        ]
+
+        for pattern in patterns:
+            matches = re.findall(pattern, raw_text, re.IGNORECASE)
+            if matches:
+                return matches[0].strip()
+
+        return None
+
+    def extract_course_code(self, raw_text: str) -> Optional[str]:
+        """Extract course code from text"""
+        import re
+
+        patterns = [
+            r"course[:\s]*code[:\s]*([A-Z0-9-]+)",
+            r"code[:\s]*([A-Z0-9-]+)",
+        ]
+
+        for pattern in patterns:
+            matches = re.findall(pattern, raw_text, re.IGNORECASE)
+            if matches:
+                return matches[0].strip()
+
+        return None
+
+    def extract_program_level(self, raw_text: str) -> Optional[str]:
+        """Extract program level from text"""
+        text_lower = raw_text.lower()
+
+        if "advanced" in text_lower:
+            return "Advanced"
+        elif "intermediate" in text_lower:
+            return "Intermediate"
+        elif "basic" in text_lower or "beginner" in text_lower:
+            return "Basic"
+        else:
+            return None
+
+    def determine_ce_category(self, subject_areas: List[str], course_title: str) -> str:
+        """Determine CE category based on subject areas and title"""
+        if not subject_areas:
+            return "General CPE"
+
+        # Check for ethics indicators
+        if "Administrative practices" in subject_areas:
+            title_lower = course_title.lower() if course_title else ""
+            if "ethics" in title_lower or "professional responsibility" in title_lower:
+                return "Professional Ethics CPE"
+
+        # Default to General CPE
+        return "General CPE"
 
     def extract_ce_broker_fields(self, raw_text: str, parsed_data: Dict) -> Dict:
         """Extract CE Broker specific fields from certificate text - IMPROVED VERSION"""

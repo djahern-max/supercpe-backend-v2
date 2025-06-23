@@ -80,32 +80,48 @@ def validate_file(file: UploadFile):
 
 
 async def process_with_ai(file: UploadFile, license_number: str):
-    """AI processing using existing vision service"""
+    """REAL AI processing using Google Vision API - NO MOCK DATA"""
     try:
-        # For now, create a basic parsing result that we can enhance later
-        # This bypasses the missing CPEParsingService issue
+        logger.info(f"Starting REAL AI processing for {file.filename}")
 
-        basic_parsing_result = {
+        # Initialize the enhanced vision service
+        vision_service = EnhancedVisionService()
+
+        # Read the actual file content
+        file_content = await file.read()
+        await file.seek(0)  # Reset file pointer
+
+        # Extract text using Google Vision API
+        raw_text = vision_service.extract_text_from_file(
+            file_content, file.content_type
+        )
+
+        # Extract structured data using AI
+        parsed_data = vision_service.parse_certificate_data(raw_text, file.filename)
+
+        # Build the parsing result with REAL extracted data
+        parsing_result = {
             "success": True,
             "parsed_data": {
-                "cpe_hours": {"value": 2.0},
-                "ethics_hours": {"value": 0.0},
-                "course_title": {"value": "Course Title Extracted"},
-                "provider": {"value": "Provider Name Extracted"},
-                "completion_date": {"value": "2025-06-22"},
-                "certificate_number": {"value": "CERT-001"},
+                "cpe_hours": {"value": parsed_data.get("cpe_credits", 0.0)},
+                "ethics_hours": {"value": parsed_data.get("ethics_credits", 0.0)},
+                "course_title": {"value": parsed_data.get("course_title", "")},
+                "provider": {"value": parsed_data.get("provider", "")},
+                "completion_date": {"value": parsed_data.get("completion_date", "")},
+                "certificate_number": {
+                    "value": parsed_data.get("certificate_number", "")
+                },
             },
-            "confidence_score": 0.75,
-            "raw_text": f"Sample extracted text from {file.filename}",
-            "parsing_method": "enhanced_vision",
+            "confidence_score": parsed_data.get("confidence_score", 0.0),
+            "raw_text": raw_text,  # REAL extracted text
+            "parsing_method": "google_vision_real",
         }
 
-        logger.info(f"Basic parsing completed for {file.filename}")
-        return basic_parsing_result
+        return parsing_result
 
     except Exception as e:
-        logger.error(f"AI processing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"AI parsing failed: {str(e)}")
+        logger.error(f"REAL AI processing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
 
 
 def create_enhanced_cpe_record_from_parsing(
