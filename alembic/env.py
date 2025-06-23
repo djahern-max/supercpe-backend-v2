@@ -14,10 +14,15 @@ from app.core.database import Base
 
 # Import all models to ensure they're detected by Alembic
 from app.models.cpa import CPA
-from app.models.compliance import ComplianceRequirement
+
+# REMOVED: from app.models.compliance import ComplianceRequirement  # This model was deleted
 from app.models.payment import Payment
-from app.models.cpe_record import CPERecord, CPEUploadSession
-from app.models.user import User, Subscription  # Add this line to import the User model
+from app.models.cpe_record import CPERecord
+
+# REMOVED: CPEUploadSession  # Check if this model still exists
+from app.models.user import User
+
+# REMOVED: Subscription  # Check if this model still exists
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -1,1034 +1,237 @@
-# app/services/vision_service.py - Complete Enhanced Vision Service
+# app/services/vision_service.py - SIMPLIFIED VERSION
 
-import re
-from datetime import datetime
-from typing import Dict, List, Optional
 import logging
+import re
+from typing import Dict, Optional, List
+from datetime import datetime, date
 from google.cloud import vision
 
 logger = logging.getLogger(__name__)
 
 
-class SubjectAreaDetector:
-    """Automatically detect CE Broker subject areas from course content"""
-
+class SimplifiedVisionService:
+    """Simplified vision service focused on core CPE data extraction"""
+    
     def __init__(self):
-        # CE Broker subject areas with associated keywords
-        self.subject_keywords = {
-            "Taxes": [
-                "tax",
-                "taxation",
-                "income tax",
-                "corporate tax",
-                "sales tax",
-                "property tax",
-                "tax preparation",
-                "tax planning",
-                "irs",
-                "1040",
-                "deductions",
-                "credits",
-                "withholding",
-                "estimated tax",
-                "tax law",
-                "tax code",
-                "tax compliance",
-                "tax return",
-                "taxable income",
-            ],
-            "Finance": [
-                "finance",
-                "financial",
-                "investment",
-                "portfolio",
-                "banking",
-                "credit",
-                "debt",
-                "loan",
-                "mortgage",
-                "interest",
-                "cash flow",
-                "financial planning",
-                "capital",
-                "equity",
-                "bonds",
-                "securities",
-                "financial analysis",
-                "budgeting",
-                "financial management",
-                "financial statements",
-                "valuation",
-                "cost of capital",
-            ],
-            "Public accounting": [
-                "public accounting",
-                "cpa firm",
-                "audit",
-                "auditing",
-                "attestation",
-                "compilation",
-                "review",
-                "financial statement audit",
-                "gaas",
-                "pcaob",
-                "independence",
-                "professional standards",
-                "peer review",
-            ],
-            "Governmental accounting": [
-                "government",
-                "governmental",
-                "municipal",
-                "public sector",
-                "gasb",
-                "fund accounting",
-                "governmental funds",
-                "proprietary funds",
-                "fiduciary funds",
-                "budget",
-                "appropriation",
-                "grant accounting",
-            ],
-            "Public auditing": [
-                "government audit",
-                "compliance audit",
-                "single audit",
-                "yellow book",
-                "gagas",
-                "federal audit",
-                "state audit",
-                "performance audit",
-            ],
-            "Business law": [
-                "business law",
-                "corporate law",
-                "contract",
-                "legal",
-                "litigation",
-                "compliance",
-                "regulations",
-                "securities law",
-                "employment law",
-                "intellectual property",
-                "bankruptcy",
-                "mergers",
-                "acquisitions",
-            ],
-            "Business management and organization": [
-                "management",
-                "leadership",
-                "organization",
-                "strategy",
-                "operations",
-                "human resources",
-                "hr",
-                "organizational behavior",
-                "project management",
-                "process improvement",
-                "efficiency",
-                "productivity",
-                "team building",
-                "business strategy",
-                "organizational development",
-                "change management",
-            ],
-            "Economics": [
-                "economics",
-                "economic",
-                "economy",
-                "macroeconomics",
-                "microeconomics",
-                "inflation",
-                "recession",
-                "gdp",
-                "monetary policy",
-                "fiscal policy",
-                "market analysis",
-                "economic indicators",
-                "supply and demand",
-                "economic theory",
-                "market economy",
-            ],
-            "Communications": [
-                "communication",
-                "communications",
-                "presentation",
-                "writing",
-                "speaking",
-                "public speaking",
-                "business communication",
-                "interpersonal",
-                "negotiation",
-                "conflict resolution",
-                "customer service",
-                "business writing",
-                "effective communication",
-            ],
-            "Computer science": [
-                "computer",
-                "technology",
-                "software",
-                "hardware",
-                "programming",
-                "database",
-                "cybersecurity",
-                "it",
-                "information technology",
-                "systems",
-                "network",
-                "cloud computing",
-                "data analytics",
-                "artificial intelligence",
-                "automation",
-                "digital transformation",
-            ],
-            "Personal development": [
-                "personal development",
-                "professional development",
-                "career",
-                "skills development",
-                "training",
-                "education",
-                "learning",
-                "self improvement",
-                "professional growth",
-                "time management",
-                "work-life balance",
-                "stress management",
-            ],
-            "Statistics": [
-                "statistics",
-                "statistical",
-                "data analysis",
-                "regression",
-                "correlation",
-                "probability",
-                "sampling",
-                "statistical methods",
-                "descriptive statistics",
-                "inferential statistics",
-                "hypothesis testing",
-            ],
-            "Mathematics": [
-                "mathematics",
-                "mathematical",
-                "calculus",
-                "algebra",
-                "quantitative",
-                "mathematical modeling",
-                "financial mathematics",
-                "actuarial",
-            ],
-            "Marketing": [
-                "marketing",
-                "advertising",
-                "promotion",
-                "brand",
-                "customer acquisition",
-                "market research",
-                "digital marketing",
-                "social media marketing",
-                "sales",
-                "customer relationship",
-                "market analysis",
-            ],
-            "Personnel and human resources": [
-                "human resources",
-                "hr",
-                "personnel",
-                "employee",
-                "hiring",
-                "recruitment",
-                "compensation",
-                "benefits",
-                "performance management",
-                "employee relations",
-                "workplace",
-                "labor relations",
-                "payroll",
-            ],
-            "Management advisory services": [
-                "advisory",
-                "consulting",
-                "business advisory",
-                "management consulting",
-                "advisory services",
-                "business consulting",
-                "strategic advisory",
-                "financial advisory",
-                "operational advisory",
-            ],
-            "Administrative practices": [
-                "administrative",
-                "administration",
-                "office management",
-                "procedures",
-                "policies",
-                "workflow",
-                "business processes",
-                "documentation",
-                "record keeping",
-                "filing systems",
-                "office procedures",
-                "ethics",
-                "professional responsibility",
-                "conduct",
-                "integrity",
-            ],
-            "Social environment of business": [
-                "social responsibility",
-                "corporate social responsibility",
-                "csr",
-                "sustainability",
-                "environmental",
-                "diversity",
-                "inclusion",
-                "corporate citizenship",
-                "stakeholder",
-                "community relations",
-                "social impact",
-                "environmental impact",
-            ],
-            "Production": [
-                "production",
-                "manufacturing",
-                "operations",
-                "supply chain",
-                "inventory",
-                "quality control",
-                "lean manufacturing",
-                "six sigma",
-                "process improvement",
-                "operational efficiency",
-                "logistics",
-            ],
-            "Specialized knowledge and its application": [
-                "specialized",
-                "industry specific",
-                "niche",
-                "specialized knowledge",
-                "expert",
-                "advanced",
-                "technical expertise",
-                "domain knowledge",
-            ],
-        }
-
-    def detect_subject_areas(
-        self,
-        course_title: str,
-        provider: str = "",
-        raw_text: str = "",
-        field_of_study: str = "",
-    ) -> List[str]:
-        """Detect subject areas based on course content"""
-        # Combine all text for analysis
-        combined_text = " ".join(
-            [course_title or "", provider or "", raw_text or "", field_of_study or ""]
-        ).lower()
-
-        detected_areas = []
-        scores = {}
-
-        # Score each subject area based on keyword matches
-        for subject, keywords in self.subject_keywords.items():
-            score = 0
-            matched_keywords = []
-
-            for keyword in keywords:
-                # Count occurrences of each keyword
-                count = len(
-                    re.findall(
-                        r"\b" + re.escape(keyword.lower()) + r"\b", combined_text
-                    )
-                )
-                if count > 0:
-                    score += count
-                    matched_keywords.append(keyword)
-
-            if score > 0:
-                scores[subject] = {"score": score, "keywords": matched_keywords}
-
-        # Select subject areas with significant scores
-        if scores:
-            # Sort by score, take top matches
-            sorted_subjects = sorted(
-                scores.items(), key=lambda x: x[1]["score"], reverse=True
-            )
-
-            # Take subjects with score >= 1 (at least one keyword match)
-            for subject, data in sorted_subjects:
-                if data["score"] >= 1:
-                    detected_areas.append(subject)
-
-                # Limit to top 3 most relevant areas
-                if len(detected_areas) >= 3:
-                    break
-
-        # Apply business rules and fallbacks
-        detected_areas = self._apply_business_rules(
-            detected_areas, course_title, combined_text
-        )
-
-        return detected_areas
-
-    def _apply_business_rules(
-        self, detected_areas: List[str], course_title: str, combined_text: str
-    ) -> List[str]:
-        """Apply business rules to refine subject area detection"""
-
-        # If no areas detected, apply fallback logic
-        if not detected_areas:
-            # Check for common patterns
-            title_lower = course_title.lower() if course_title else ""
-
-            if any(word in title_lower for word in ["tax", "taxation"]):
-                detected_areas.append("Taxes")
-            elif any(
-                word in title_lower
-                for word in [
-                    "finance",
-                    "financial",
-                    "money",
-                    "investment",
-                    "debt",
-                    "interest",
-                ]
-            ):
-                detected_areas.append("Finance")
-            elif any(word in title_lower for word in ["business", "management"]):
-                detected_areas.append("Business management and organization")
-            elif any(word in title_lower for word in ["economic", "economy"]):
-                detected_areas.append("Economics")
-            elif any(
-                word in title_lower for word in ["communication", "writing", "speaking"]
-            ):
-                detected_areas.append("Communications")
-            elif any(
-                word in title_lower for word in ["computer", "technology", "software"]
-            ):
-                detected_areas.append("Computer science")
-            elif any(word in title_lower for word in ["ethics", "ethical"]):
-                detected_areas.append("Administrative practices")
-            else:
-                # Default fallback for accounting courses
-                detected_areas.append("Specialized knowledge and its application")
-
-        # Remove duplicates while preserving order
-        seen = set()
-        filtered_areas = []
-        for area in detected_areas:
-            if area not in seen:
-                seen.add(area)
-                filtered_areas.append(area)
-
-        return filtered_areas
-
-
-class CEBrokerMappings:
-    """Helper class for CE Broker field mappings and detection"""
-
-    @staticmethod
-    def detect_subject_areas(
-        course_title: str, field_of_study: str = "", raw_text: str = ""
-    ) -> List[str]:
-        """Detect subject areas using the SubjectAreaDetector"""
-        detector = SubjectAreaDetector()
-        return detector.detect_subject_areas(course_title, "", raw_text, field_of_study)
-
-    @staticmethod
-    def detect_course_type(raw_text: str, instructional_method: str = "") -> str:
-        """Detect if course is Live or Anytime"""
-        if not raw_text and not instructional_method:
-            return "anytime"  # Default assumption
-
-        combined_text = f"{raw_text} {instructional_method}".lower()
-
-        # Live indicators
-        live_indicators = [
-            "live",
-            "webinar",
-            "classroom",
-            "instructor-led",
-            "seminar",
-            "workshop",
-            "conference",
-            "presentation",
-            "lecture",
-            "group study",
-        ]
-
-        # Anytime indicators
-        anytime_indicators = [
-            "self-study",
-            "online",
-            "computer-based",
-            "self-paced",
-            "on-demand",
-            "qas",
-            "individual study",
-            "correspondence",
-        ]
-
-        live_score = sum(
-            1 for indicator in live_indicators if indicator in combined_text
-        )
-        anytime_score = sum(
-            1 for indicator in anytime_indicators if indicator in combined_text
-        )
-
-        if live_score > anytime_score:
-            return "live"
-        else:
-            return "anytime"  # Default to anytime
-
-    @staticmethod
-    def detect_delivery_method(
-        course_type: str, instructional_method: str = "", raw_text: str = ""
-    ) -> str:
-        """Detect delivery method based on course type and content"""
-        combined_text = f"{instructional_method} {raw_text}".lower()
-
-        # Computer-based training indicators
-        if any(
-            indicator in combined_text
-            for indicator in [
-                "computer",
-                "online",
-                "internet",
-                "web-based",
-                "digital",
-                "software",
-                "app",
-                "platform",
-            ]
-        ):
-            return "Computer-Based Training (ie: online courses)"
-
-        # Correspondence indicators
-        elif any(
-            indicator in combined_text
-            for indicator in [
-                "correspondence",
-                "mail",
-                "written",
-                "reading",
-                "book",
-                "manual",
-                "text",
-            ]
-        ):
-            return "Correspondence"
-
-        # Prerecorded broadcast indicators
-        elif any(
-            indicator in combined_text
-            for indicator in [
-                "recorded",
-                "video",
-                "broadcast",
-                "replay",
-                "playback",
-                "dvd",
-                "cd-rom",
-            ]
-        ):
-            return "Prerecorded Broadcast"
-
-        # Default based on course type
-        else:
-            return "Computer-Based Training (ie: online courses)"  # Most common default
-
-
-class EnhancedVisionService:
-    def __init__(self):
-        self.confidence_threshold = 0.7
-        self.subject_detector = SubjectAreaDetector()
-        # ADD THIS:
-        self.vision_client = vision.ImageAnnotatorClient()
-
-    # ADD THIS METHOD:
-    async def extract_text_from_pdf(self, file_content: bytes) -> str:
-        """Extract text from PDF using Google Vision API"""
+        self.client = vision.ImageAnnotatorClient()
+    
+    def extract_text_from_image(self, image_content: bytes) -> str:
+        """Extract raw text from image using Google Vision API"""
         try:
-            # Create the request for PDF processing
-            input_config = vision.InputConfig(
-                content=file_content, mime_type="application/pdf"
-            )
-
-            features = [
-                vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
-            ]
-
-            request = vision.AnnotateFileRequest(
-                features=features, input_config=input_config
-            )
-
-            # Process the PDF
-            response = self.vision_client.batch_annotate_files(requests=[request])
-
-            # Extract text from all pages
-            full_text = ""
-            if response.responses:
-                for page_response in response.responses[0].responses:
-                    if page_response.full_text_annotation:
-                        full_text += page_response.full_text_annotation.text + "\n"
-
-            return full_text.strip()
-
+            image = vision.Image(content=image_content)
+            response = self.client.text_detection(image=image)
+            
+            if response.error.message:
+                raise Exception(f"Google Vision API error: {response.error.message}")
+            
+            # Get the full text
+            texts = response.text_annotations
+            if texts:
+                return texts[0].description
+            return ""
+            
         except Exception as e:
-            logger.error(f"Google Vision API error: {str(e)}")
-            raise
-
-    # ADD THIS METHOD:
+            logger.error(f"Error extracting text from image: {e}")
+            return ""
+    
     def parse_cpe_certificate(self, raw_text: str) -> Dict:
-        """Parse CPE certificate data from extracted text"""
-        import re
-
-        patterns = {
-            "course_title": r"(?:course|program|title):?\s*([A-Za-z0-9\s\-:&]{10,100})",
-            "provider": r"(?:provider|sponsor|issued by):?\s*([A-Za-z0-9\s&.,\-]{5,50})",
-            "completion_date": r"(?:completed|date):?\s*(\w+\s+\d{1,2},?\s+\d{4})",
-            "cpe_credits": r"(\d+(?:\.\d+)?)\s*(?:cpe|credits?|hours?)",
-            "field_of_study": r"(?:field|subject|area):?\s*([A-Za-z\s]{3,30})",
-        }
-
-        parsed = {}
-        for field, pattern in patterns.items():
-            match = re.search(pattern, raw_text, re.IGNORECASE)
-            if match:
-                parsed[field] = match.group(1).strip()
-
-        return parsed
-
-    def extract_instructional_method(self, raw_text: str) -> Optional[str]:
-        """Extract instructional method from raw text"""
+        """
+        Parse core CPE data from raw text.
+        Focus on reliability over completeness.
+        """
         if not raw_text:
-            return None
-
-        patterns = [
-            r"instructional method:?\s*([a-zA-Z\s\-]+)",
-            r"method:?\s*([a-zA-Z\s\-]+)",
-            r"delivery:?\s*([a-zA-Z\s\-]+)",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, raw_text, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-        return None
-
-    def extract_ce_broker_fields(self, raw_text: str, parsed_data: Dict) -> Dict:
-        """Extract CE Broker specific fields from certificate text - IMPROVED VERSION"""
-
-        logger.info("Starting CE Broker field extraction...")
-
+            return self._empty_result()
+        
         try:
-            # Get basic extracted data
-            course_title = parsed_data.get("course_title", "") or ""
-            field_of_study = parsed_data.get("field_of_study", "") or ""
-
-            logger.info(f"Course title: '{course_title}'")
-            logger.info(f"Field of study: '{field_of_study}'")
-            logger.info(f"Raw text available: {bool(raw_text)}")
-
-            # Extract instructional method first
-            instructional_method = self.extract_instructional_method(raw_text)
-            logger.info(f"Extracted instructional_method: '{instructional_method}'")
-
-            # Auto-detect CE Broker fields with improved logging
-            subject_areas = self.subject_detector.detect_subject_areas(
-                course_title, parsed_data.get("provider", ""), raw_text, field_of_study
-            )
-            logger.info(f"Detected subject_areas: {subject_areas}")
-
-            # IMPROVED: Better course type detection with fallbacks
-            course_type = self._detect_course_type_with_fallbacks(
-                raw_text, instructional_method, course_title
-            )
-            logger.info(f"Detected course_type: '{course_type}'")
-
-            # IMPROVED: Better delivery method detection
-            delivery_method = self._detect_delivery_method_with_fallbacks(
-                course_type, instructional_method, raw_text, course_title
-            )
-            logger.info(f"Detected delivery_method: '{delivery_method}'")
-
-            # Extract additional fields
-            nasba_sponsor = self.extract_nasba_sponsor(raw_text)
-            course_code = self.extract_course_code(raw_text)
-            program_level = self.extract_program_level(raw_text)
-
-            logger.info(
-                f"Additional fields - NASBA: {nasba_sponsor}, Code: {course_code}, Level: {program_level}"
-            )
-
-            # Ensure we have minimum required fields
-            if not course_type:
-                course_type = "anytime"  # Safe default
-                logger.warning("No course_type detected, using default: 'anytime'")
-
-            if not delivery_method:
-                delivery_method = (
-                    "Computer-Based Training (ie: online courses)"  # Safe default
-                )
-                logger.warning("No delivery_method detected, using default")
-
-            if not subject_areas or len(subject_areas) == 0:
-                subject_areas = [
-                    "Specialized knowledge and its application"
-                ]  # Safe default
-                logger.warning("No subject_areas detected, using default")
-
             result = {
-                "course_type": course_type,
-                "delivery_method": delivery_method,
-                "instructional_method": instructional_method,
-                "subject_areas": subject_areas,
-                "nasba_sponsor_number": nasba_sponsor,
-                "course_code": course_code,
-                "program_level": program_level,
-                "ce_category": self.determine_ce_category(subject_areas, course_title),
-                "ce_broker_ready": self.check_ce_broker_readiness(
-                    parsed_data,
-                    {
-                        "course_type": course_type,
-                        "delivery_method": delivery_method,
-                        "subject_areas": subject_areas,
-                    },
-                ),
+                "course_title": self._extract_course_title(raw_text),
+                "provider": self._extract_provider(raw_text),
+                "cpe_credits": self._extract_cpe_credits(raw_text),
+                "ethics_credits": self._extract_ethics_credits(raw_text),
+                "completion_date": self._extract_completion_date(raw_text),
+                "certificate_number": self._extract_certificate_number(raw_text),
+                "confidence_score": self._calculate_confidence(raw_text),
             }
-
-            logger.info(f"Final CE Broker fields: {result}")
-            return result
-
+            
+            # Only return fields where we have reasonable confidence
+            filtered_result = {}
+            for key, value in result.items():
+                if value is not None and value != "" and value != 0.0:
+                    filtered_result[key] = value
+            
+            return filtered_result
+            
         except Exception as e:
-            logger.error(f"Error in CE Broker field extraction: {str(e)}")
-            logger.exception("Full traceback:")
-
-            # Return safe defaults
-            return {
-                "course_type": "anytime",
-                "delivery_method": "Computer-Based Training (ie: online courses)",
-                "instructional_method": None,
-                "subject_areas": ["Specialized knowledge and its application"],
-                "nasba_sponsor_number": None,
-                "course_code": None,
-                "program_level": None,
-                "ce_category": "General CPE",
-                "ce_broker_ready": False,
-            }
-
-    def extract_nasba_sponsor(self, raw_text: str) -> Optional[str]:
-        """Extract NASBA sponsor number from raw text"""
-        if not raw_text:
-            return None
-
+            logger.error(f"Error parsing certificate: {e}")
+            return self._empty_result()
+    
+    def _extract_course_title(self, text: str) -> Optional[str]:
+        """Extract course title - look for common patterns"""
         patterns = [
-            r"nasba[:\s]*([0-9]+)",
-            r"sponsor[:\s]*([0-9]+)",
-            r"tx sponsor[:\s]*([0-9]+)",
-            r"ny sponsor[:\s]*([0-9]+)",
+            r"(?:course title|title|course|subject):\s*([^\n\r]+)",
+            r"(?:successfully completing|completion of)\s+([^\n\r]+)",
+            r"certificate of completion\s+(?:for|awarded to).*?(?:for|in)\s+([^\n\r]+)",
         ]
-
+        
         for pattern in patterns:
-            match = re.search(pattern, raw_text, re.IGNORECASE)
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if match:
-                return match.group(1).strip()
+                title = match.group(1).strip()
+                # Clean up common artifacts
+                title = re.sub(r"^(for|in|of)\s+", "", title, flags=re.IGNORECASE)
+                title = re.sub(r"\s+", " ", title)  # Normalize whitespace
+                if len(title) > 10 and len(title) < 200:  # Reasonable length
+                    return title
+        
         return None
-
-    def extract_course_code(self, raw_text: str) -> Optional[str]:
-        """Extract course code from raw text"""
-        if not raw_text:
-            return None
-
+    
+    def _extract_provider(self, text: str) -> Optional[str]:
+        """Extract provider/sponsor name"""
         patterns = [
-            r"course code:?\s*([A-Z0-9\-]+)",
-            r"code:?\s*([A-Z0-9\-]+)",
-            r"program code:?\s*([A-Z0-9\-]+)",
+            r"(?:provider|sponsor|sponsored by|offered by):\s*([^\n\r]+)",
+            r"^([A-Z][^\n\r]*(?:CPE|Education|Institute|University|College|Academy))",
+            r"NASBA\s+Sponsor[^\n\r]*\n([^\n\r]+)",
         ]
-
+        
         for pattern in patterns:
-            match = re.search(pattern, raw_text, re.IGNORECASE)
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if match:
-                return match.group(1).strip()
+                provider = match.group(1).strip()
+                # Clean up
+                provider = re.sub(r"[®™©]", "", provider)
+                provider = re.sub(r"\s+", " ", provider)
+                if len(provider) > 3 and len(provider) < 100:
+                    return provider
+        
         return None
-
-    def extract_program_level(self, raw_text: str) -> Optional[str]:
-        """Extract program level from raw text"""
-        if not raw_text:
-            return None
-
-        levels = ["basic", "intermediate", "advanced", "overview", "update"]
-        raw_lower = raw_text.lower()
-
-        for level in levels:
-            if level in raw_lower:
-                return level.title()
+    
+    def _extract_cpe_credits(self, text: str) -> float:
+        """Extract CPE credits - be very precise about this"""
+        patterns = [
+            r"CPE\s+Credits?:\s*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s+CPE\s+Credits?",
+            r"Credits?:\s*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s+(?:hours?|credits?)\s+(?:of\s+)?CPE",
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                try:
+                    credits = float(matches[0])
+                    # Reasonable bounds for CPE credits
+                    if 0.5 <= credits <= 50:
+                        return credits
+                except ValueError:
+                    continue
+        
+        return 0.0
+    
+    def _extract_ethics_credits(self, text: str) -> float:
+        """Extract ethics credits if mentioned"""
+        patterns = [
+            r"Ethics?\s+Credits?:\s*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s+Ethics?\s+Credits?",
+            r"Professional\s+Ethics?\s+CPE:\s*(\d+(?:\.\d+)?)",
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                try:
+                    credits = float(matches[0])
+                    if 0.0 <= credits <= 10:  # Ethics credits are usually smaller
+                        return credits
+                except ValueError:
+                    continue
+        
+        return 0.0
+    
+    def _extract_completion_date(self, text: str) -> Optional[date]:
+        """Extract completion date"""
+        patterns = [
+            r"(?:completion date|completed on|date):\s*(\w+,?\s+\w+\s+\d{1,2},?\s+\d{4})",
+            r"(?:date|completed):\s*(\d{1,2}[/-]\d{1,2}[/-]\d{4})",
+            r"(\w+\s+\d{1,2},?\s+\d{4})",  # "June 6, 2025"
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                try:
+                    # Try different date parsing approaches
+                    parsed_date = self._parse_date_string(match)
+                    if parsed_date:
+                        return parsed_date
+                except:
+                    continue
+        
         return None
-
-    def determine_ce_category(self, subject_areas: List[str], course_title: str) -> str:
-        """Determine CE category based on subject areas and course title"""
-        if not subject_areas:
-            return "General CPE"
-
-        # Check for ethics-related subjects
-        ethics_subjects = ["Administrative practices"]
-        if any(subj in subject_areas for subj in ethics_subjects):
-            return "Ethics CPE"
-
-        # Check for specialized subjects
-        specialized_subjects = ["Taxes", "Public accounting", "Governmental accounting"]
-        if any(subj in subject_areas for subj in specialized_subjects):
-            return "Technical CPE"
-
-        return "General CPE"
-
-    def _detect_course_type_with_fallbacks(
-        self, raw_text: str, instructional_method: str, course_title: str
-    ) -> str:
-        """Improved course type detection with multiple fallback strategies"""
-
-        if not raw_text and not instructional_method and not course_title:
-            return "anytime"  # Default assumption
-
-        combined_text = f"{raw_text} {instructional_method} {course_title}".lower()
-
-        # Live indicators (more comprehensive)
-        live_indicators = [
-            "live",
-            "webinar",
-            "classroom",
-            "instructor-led",
-            "seminar",
-            "workshop",
-            "conference",
-            "presentation",
-            "lecture",
-            "group study",
-            "in-person",
-            "face-to-face",
-            "interactive",
-            "real-time",
-            "scheduled",
-            "session",
+    
+    def _parse_date_string(self, date_str: str) -> Optional[date]:
+        """Parse various date string formats"""
+        date_str = date_str.strip()
+        
+        formats = [
+            "%B %d, %Y",     # "June 6, 2025"
+            "%b %d, %Y",     # "Jun 6, 2025"
+            "%m/%d/%Y",      # "6/6/2025"
+            "%m-%d-%Y",      # "6-6-2025"
+            "%Y-%m-%d",      # "2025-06-06"
         ]
-
-        # Anytime indicators (more comprehensive)
-        anytime_indicators = [
-            "self-study",
-            "online",
-            "computer-based",
-            "self-paced",
-            "on-demand",
-            "qas",
-            "individual study",
-            "correspondence",
-            "digital",
-            "e-learning",
-            "video",
-            "recorded",
-            "tutorial",
-            "course materials",
-            "study guide",
+        
+        for fmt in formats:
+            try:
+                return datetime.strptime(date_str, fmt).date()
+            except ValueError:
+                continue
+        
+        return None
+    
+    def _extract_certificate_number(self, text: str) -> Optional[str]:
+        """Extract certificate number if present"""
+        patterns = [
+            r"Certificate\s+(?:Number|#):\s*([A-Z0-9-]+)",
+            r"Certificate\s+ID:\s*([A-Z0-9-]+)",
+            r"(?:ID|Number):\s*([A-Z0-9-]{5,20})",
         ]
-
-        live_score = sum(
-            1 for indicator in live_indicators if indicator in combined_text
-        )
-        anytime_score = sum(
-            1 for indicator in anytime_indicators if indicator in combined_text
-        )
-
-        logger.info(
-            f"Course type scoring - Live: {live_score}, Anytime: {anytime_score}"
-        )
-
-        if live_score > anytime_score:
-            return "live"
-        else:
-            return "anytime"  # Default to anytime
-
-    def _detect_delivery_method_with_fallbacks(
-        self,
-        course_type: str,
-        instructional_method: str,
-        raw_text: str,
-        course_title: str,
-    ) -> str:
-        """Improved delivery method detection with better pattern matching"""
-
-        combined_text = f"{instructional_method} {raw_text} {course_title}".lower()
-
-        # Computer-based training indicators (expanded)
-        if any(
-            indicator in combined_text
-            for indicator in [
-                "computer",
-                "online",
-                "internet",
-                "web-based",
-                "digital",
-                "software",
-                "app",
-                "platform",
-                "e-learning",
-                "virtual",
-                "portal",
-                "website",
-            ]
-        ):
-            return "Computer-Based Training (ie: online courses)"
-
-        # Correspondence indicators (expanded)
-        elif any(
-            indicator in combined_text
-            for indicator in [
-                "correspondence",
-                "mail",
-                "written",
-                "reading",
-                "book",
-                "manual",
-                "text",
-                "study guide",
-                "materials",
-                "self-study",
-                "individual",
-            ]
-        ):
-            return "Correspondence"
-
-        # Prerecorded broadcast indicators (expanded)
-        elif any(
-            indicator in combined_text
-            for indicator in [
-                "recorded",
-                "video",
-                "broadcast",
-                "replay",
-                "playback",
-                "dvd",
-                "cd-rom",
-                "streaming",
-                "media",
-                "recording",
-            ]
-        ):
-            return "Prerecorded Broadcast"
-
-        # Default based on course type
-        else:
-            return "Computer-Based Training (ie: online courses)"  # Most common default
-
-    def check_ce_broker_readiness(
-        self, parsed_data: Dict, ce_broker_data: Dict
-    ) -> bool:
-        """Check if record has all required fields for CE Broker export - IMPROVED"""
-
-        required_checks = [
-            ("course_title", parsed_data.get("course_title")),
-            ("provider", parsed_data.get("provider")),
-            ("completion_date", parsed_data.get("completion_date")),
-            ("cpe_credits", parsed_data.get("cpe_credits")),
-            ("course_type", ce_broker_data.get("course_type")),
-            ("delivery_method", ce_broker_data.get("delivery_method")),
-            ("subject_areas", ce_broker_data.get("subject_areas")),
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                cert_num = match.group(1).strip()
+                if len(cert_num) >= 3:
+                    return cert_num
+        
+        return None
+    
+    def _calculate_confidence(self, text: str) -> float:
+        """Calculate parsing confidence based on data found"""
+        confidence = 0.0
+        
+        # Key indicators of a valid CPE certificate
+        indicators = [
+            r"CPE|Continuing Professional Education",
+            r"Certificate of Completion",
+            r"Credits?",
+            r"NASBA",
+            r"CPA",
         ]
-
-        missing_fields = []
-        for field_name, field_value in required_checks:
-            if field_value is None or field_value == "" or field_value == []:
-                missing_fields.append(field_name)
-
-        is_ready = len(missing_fields) == 0
-
-        if missing_fields:
-            logger.warning(f"CE Broker not ready. Missing fields: {missing_fields}")
-        else:
-            logger.info("CE Broker ready - all required fields present")
-
-        return is_ready
-
-    def enhance_parsed_data(self, raw_text: str, basic_parsed_data: Dict) -> Dict:
-        """Main method to enhance basic parsed data with CE Broker fields - IMPROVED"""
-
-        logger.info("Starting data enhancement...")
-
-        # Extract CE Broker specific fields
-        ce_broker_fields = self.extract_ce_broker_fields(raw_text, basic_parsed_data)
-
-        # Combine with basic data
-        enhanced_data = {**basic_parsed_data, **ce_broker_fields}
-
-        # Add metadata
-        enhanced_data["parsing_enhanced"] = True
-        enhanced_data["enhancement_timestamp"] = datetime.now().isoformat()
-
-        logger.info(
-            f"Enhanced parsing completed. CE Broker ready: {ce_broker_fields['ce_broker_ready']}"
-        )
-
-        return enhanced_data
-
-
-# Create CPE record with enhanced CE Broker fields
-def create_enhanced_cpe_record_from_parsing(
-    parsing_result: Dict,
-    file,
-    license_number: str,
-    current_user,
-    upload_result: Dict,
-    storage_tier: str = "free",
-):
-    """Create CPE record with enhanced CE Broker fields"""
-
-    from app.models.cpe_record import CPERecord
-    from datetime import datetime
-
-    # Initialize enhanced vision service
-    vision_service = EnhancedVisionService()
-
-    # Get basic parsed data
-    parsed_data = parsing_result.get("parsed_data", {})
-    raw_text = parsing_result.get("raw_text", "")
-
-    # Enhance with CE Broker fields
-    enhanced_data = vision_service.enhance_parsed_data(raw_text, parsed_data)
-
-    # Create CPE record with all fields
-    cpe_record = CPERecord(
-        # Basic fields
-        cpa_license_number=license_number,
-        user_id=current_user.id if current_user else None,
-        document_filename=upload_result.get("file_key", file.filename),
-        original_filename=file.filename,
-        # Core CPE data
-        cpe_credits=enhanced_data.get("cpe_credits", 0.0),
-        ethics_credits=enhanced_data.get("ethics_credits", 0.0),
-        course_title=enhanced_data.get("course_title"),
-        provider=enhanced_data.get("provider"),
-        completion_date=enhanced_data.get("completion_date"),
-        certificate_number=enhanced_data.get("certificate_number"),
-        # CE Broker fields
-        course_type=enhanced_data.get("course_type"),
-        delivery_method=enhanced_data.get("delivery_method"),
-        instructional_method=enhanced_data.get("instructional_method"),
-        subject_areas=enhanced_data.get("subject_areas"),
-        field_of_study=enhanced_data.get("field_of_study"),
-        ce_category=enhanced_data.get("ce_category"),
-        nasba_sponsor_number=enhanced_data.get("nasba_sponsor_number"),
-        course_code=enhanced_data.get("course_code"),
-        program_level=enhanced_data.get("program_level"),
-        ce_broker_ready=enhanced_data.get("ce_broker_ready", False),
-        # Parsing metadata
-        confidence_score=parsing_result.get("confidence_score", 0.0),
-        parsing_method=parsing_result.get("parsing_method", "google_vision"),
-        raw_text=raw_text,
-        parsing_notes=parsing_result.get("notes"),
-        # System fields
-        storage_tier=storage_tier,
-        created_at=datetime.now(),
-    )
-
-    return cpe_record
+        
+        for indicator in indicators:
+            if re.search(indicator, text, re.IGNORECASE):
+                confidence += 0.2
+        
+        return min(confidence, 1.0)
+    
+    def _empty_result(self) -> Dict:
+        """Return empty result structure"""
+        return {
+            "course_title": None,
+            "provider": None,
+            "cpe_credits": 0.0,
+            "ethics_credits": 0.0,
+            "completion_date": None,
+            "certificate_number": None,
+            "confidence_score": 0.0,
+        }

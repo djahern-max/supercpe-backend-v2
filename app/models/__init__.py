@@ -1,7 +1,6 @@
 from .cpa import CPA
-from .compliance import ComplianceRequirement
 from .payment import Payment
-from .cpe_record import CPERecord, CPEUploadSession
+from .cpe_record import CPERecord
 from .user import User, Subscription
 
 
