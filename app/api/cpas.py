@@ -142,3 +142,38 @@ async def lookup_passcode_temp(passcode: str, db: Session = Depends(get_db)):
         }
     except Exception as e:
         return {"error": str(e), "found": False}
+
+
+@router.get("/debug-passcode/{passcode}")
+async def debug_passcode_lookup(passcode: str, db: Session = Depends(get_db)):
+    """Debug passcode lookup"""
+    try:
+        # Log what we received
+        print(f"Received passcode: '{passcode}' (length: {len(passcode)})")
+
+        # Get all CPAs with passcodes for comparison
+        all_passcodes = (
+            db.query(CPA.license_number, CPA.passcode)
+            .filter(CPA.passcode.isnot(None))
+            .all()
+        )
+
+        for license_num, stored_passcode in all_passcodes:
+            if stored_passcode:
+                print(
+                    f"DB: '{stored_passcode}' (length: {len(stored_passcode)}) - License: {license_num}"
+                )
+                if stored_passcode.strip().upper() == passcode.strip().upper():
+                    print(f"MATCH FOUND (case insensitive): {license_num}")
+
+        # Try exact match
+        cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
+
+        return {
+            "received_passcode": passcode,
+            "received_length": len(passcode),
+            "exact_match_found": cpa is not None,
+            "all_passcodes": [(p[0], p[1]) for p in all_passcodes if p[1]],
+        }
+    except Exception as e:
+        return {"error": str(e)}
