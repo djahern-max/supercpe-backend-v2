@@ -240,7 +240,7 @@ async def upload_certificate_authenticated(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """AUTHENTICATED UPLOAD: Fixed version to ensure CE Broker fields are populated"""
+    """AUTHENTICATED UPLOAD: Fixed version with proper storage tier and error handling"""
 
     # Verify user owns this license
     if current_user.license_number != license_number:
@@ -260,18 +260,16 @@ async def upload_certificate_authenticated(
     try:
         logger.info(f"Starting authenticated upload for license {license_number}")
 
-        # Check subscription status first
+        # Check subscription status to determine storage tier
         stripe_service = StripeService(db)
         has_subscription = stripe_service.has_active_subscription(license_number)
-
-        # CRITICAL FIX: Determine storage tier based on subscription status
         storage_tier = "premium" if has_subscription else "free"
 
         logger.info(
             f"User subscription status: {has_subscription}, storage_tier: {storage_tier}"
         )
 
-        # Check upload limits for free tier users
+        # For non-premium users, check upload limits
         if not has_subscription:
             # Count existing free uploads by this user
             free_uploads = (
@@ -299,7 +297,7 @@ async def upload_certificate_authenticated(
                     },
                 )
 
-        # Validate file first
+        # Validate file
         validate_file(file)
 
         # Step 1: Upload file to storage
@@ -311,26 +309,30 @@ async def upload_certificate_authenticated(
         if not upload_result.get("success"):
             raise HTTPException(status_code=500, detail=upload_result.get("error"))
 
+        logger.info(f"File uploaded successfully: {upload_result}")
+
         # Step 2: Process with AI if requested
         if parse_with_ai:
-            # Get your parsing result from your vision service
+            logger.info("Starting AI parsing...")
+
+            # Get parsing result from vision service
             parsing_result = await process_with_ai(file, license_number)
 
             # DEBUG: Log what we got from parsing
             logger.info(f"Parsing result keys: {list(parsing_result.keys())}")
             logger.info(f"Raw text available: {bool(parsing_result.get('raw_text'))}")
 
-            # Step 3: Create CPE record with CORRECT storage tier
+            # Step 3: Create CPE record using the enhanced creation function
             cpe_record = create_enhanced_cpe_record_from_parsing(
                 parsing_result,
                 file,
                 license_number,
                 current_user,
                 upload_result,
-                storage_tier,  # THIS WAS THE MISSING PIECE!
+                storage_tier,  # Pass the determined storage tier
             )
 
-            # CRITICAL: Save to database
+            # Save to database
             db.add(cpe_record)
             db.commit()
             db.refresh(cpe_record)
@@ -339,12 +341,13 @@ async def upload_certificate_authenticated(
                 f"Successfully saved CPE record with storage_tier: {cpe_record.storage_tier}"
             )
 
-            # DEBUG: Verify CE Broker fields were set
-            logger.info(f"Saved record with CE Broker fields:")
-            logger.info(f"  - course_type: {cpe_record.course_type}")
-            logger.info(f"  - delivery_method: {cpe_record.delivery_method}")
-            logger.info(f"  - subject_areas: {cpe_record.subject_areas}")
-            logger.info(f"  - ce_broker_ready: {cpe_record.ce_broker_ready}")
+            # Verify what was saved
+            logger.info(f"Saved record details:")
+            logger.info(f"  - ID: {cpe_record.id}")
+            logger.info(f"  - Course title: {cpe_record.course_title}")
+            logger.info(f"  - CPE credits: {cpe_record.cpe_credits}")
+            logger.info(f"  - Storage tier: {cpe_record.storage_tier}")
+            logger.info(f"  - User ID: {cpe_record.user_id}")
 
             return {
                 "success": True,
@@ -360,7 +363,7 @@ async def upload_certificate_authenticated(
                         if cpe_record.completion_date
                         else None
                     ),
-                    "storage_tier": cpe_record.storage_tier,  # Include this for verification
+                    "storage_tier": cpe_record.storage_tier,
                 },
                 "file_info": upload_result,
                 "cpa": {"license_number": cpa.license_number, "name": cpa.full_name},
@@ -373,10 +376,10 @@ async def upload_certificate_authenticated(
             }
 
         else:
-            # Create basic CPE record without AI parsing
-            from app.models.cpe_record import CPERecord
-            from datetime import datetime
+            # Create basic record without AI parsing
+            logger.info("Creating basic record without AI parsing...")
 
+            # Create a basic CPE record manually
             cpe_record = CPERecord(
                 cpa_license_number=license_number,
                 user_id=current_user.id,
@@ -387,13 +390,17 @@ async def upload_certificate_authenticated(
                 course_title="Manual Entry Required",
                 provider="Unknown Provider",
                 completion_date=datetime.utcnow().date(),
-                storage_tier=storage_tier,  # CRITICAL: Set the correct storage tier
-                created_at=datetime.now(),
+                storage_tier=storage_tier,  # Set the correct storage tier
+                created_at=datetime.utcnow(),
             )
 
             db.add(cpe_record)
             db.commit()
             db.refresh(cpe_record)
+
+            logger.info(
+                f"Successfully saved basic CPE record with storage_tier: {cpe_record.storage_tier}"
+            )
 
             return {
                 "success": True,
@@ -411,8 +418,12 @@ async def upload_certificate_authenticated(
                 },
             }
 
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 402 for limit reached)
+        raise
     except Exception as e:
-        logger.error(f"Error in authenticated upload: {e}")
+        logger.error(f"Error in authenticated upload: {str(e)}")
+        logger.exception("Full traceback:")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
