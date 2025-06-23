@@ -75,7 +75,7 @@ def validate_file(file: UploadFile) -> None:
 
 
 async def process_with_vision_ai(file: UploadFile, license_number: str) -> Dict:
-    """Process file with Google Vision API"""
+    """Process file with Google Vision API with proper error handling"""
     try:
         logger.info(f"Starting AI processing for {file.filename}")
 
@@ -87,19 +87,54 @@ async def process_with_vision_ai(file: UploadFile, license_number: str) -> Dict:
         await file.seek(0)  # Reset file pointer
 
         # Extract text using Google Vision API
-        raw_text = vision_service.extract_text_from_file(
-            file_content, file.content_type
-        )
+        try:
+            raw_text = vision_service.extract_text_from_file(
+                file_content, file.content_type
+            )
+            logger.info(f"Successfully extracted {len(raw_text)} characters of text")
+        except Exception as vision_error:
+            logger.error(f"Google Vision API failed: {vision_error}")
+            # Fallback to empty text if Vision API fails
+            raw_text = ""
 
-        # Parse certificate data
-        parsed_data = vision_service.parse_certificate_data(raw_text, file.filename)
+        # Parse certificate data (handle empty text gracefully)
+        if raw_text:
+            try:
+                parsed_data = vision_service.parse_certificate_data(
+                    raw_text, file.filename
+                )
+            except Exception as parse_error:
+                logger.error(f"Parsing failed: {parse_error}")
+                # Fallback to empty data
+                parsed_data = {
+                    "cpe_credits": 0.0,
+                    "ethics_credits": 0.0,
+                    "course_title": "",
+                    "provider": "",
+                    "completion_date": "",
+                    "certificate_number": "",
+                    "confidence_score": 0.0,
+                }
+        else:
+            # No text extracted, return empty data
+            parsed_data = {
+                "cpe_credits": 0.0,
+                "ethics_credits": 0.0,
+                "course_title": "",
+                "provider": "",
+                "completion_date": "",
+                "certificate_number": "",
+                "confidence_score": 0.0,
+            }
 
         # Return structured result
         return {
             "success": True,
             "parsed_data": {
-                "cpe_hours": parsed_data.get("cpe_credits", 0.0),
-                "ethics_hours": parsed_data.get("ethics_credits", 0.0),
+                "cpe_hours": parsed_data.get("cpe_credits", 0.0),  # Map for frontend
+                "ethics_hours": parsed_data.get(
+                    "ethics_credits", 0.0
+                ),  # Map for frontend
                 "course_title": parsed_data.get("course_title", ""),
                 "provider": parsed_data.get("provider", ""),
                 "completion_date": parsed_data.get("completion_date", ""),
@@ -107,12 +142,28 @@ async def process_with_vision_ai(file: UploadFile, license_number: str) -> Dict:
             },
             "confidence_score": parsed_data.get("confidence_score", 0.0),
             "raw_text": raw_text,
-            "processing_method": "google_vision_api",
+            "processing_method": (
+                "google_vision_api" if raw_text else "manual_entry_required"
+            ),
         }
 
     except Exception as e:
         logger.error(f"AI processing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
+        # Return empty result instead of failing
+        return {
+            "success": False,
+            "parsed_data": {
+                "cpe_hours": 0.0,
+                "ethics_hours": 0.0,
+                "course_title": "",
+                "provider": "",
+                "completion_date": "",
+                "certificate_number": "",
+            },
+            "confidence_score": 0.0,
+            "raw_text": "",
+            "processing_method": "failed_manual_entry_required",
+        }
 
 
 def create_cpe_record(
@@ -123,26 +174,34 @@ def create_cpe_record(
     upload_result: Dict,
     db: Session,
 ) -> CPERecord:
-    """Create CPE record from parsing results"""
+    """Create CPE record from parsing results using correct field names"""
     try:
         parsed_data = parsing_result.get("parsed_data", {})
 
-        # Create new CPE record
+        # Create new CPE record with correct field names from your model
         cpe_record = CPERecord(
             cpa_license_number=license_number,
             user_id=current_user.id,
-            cpe_hours=float(parsed_data.get("cpe_hours", 0)),
-            ethics_hours=float(parsed_data.get("ethics_hours", 0)),
+            # Document info - use correct field names
+            document_filename=upload_result.get("filename"),
+            original_filename=file.filename,
+            # Core CPE data - use your model's field names
+            cpe_credits=float(
+                parsed_data.get("cpe_hours", 0)
+            ),  # Note: mapping cpe_hours -> cpe_credits
+            ethics_credits=float(
+                parsed_data.get("ethics_hours", 0)
+            ),  # Note: mapping ethics_hours -> ethics_credits
             course_title=parsed_data.get("course_title", ""),
             provider=parsed_data.get("provider", ""),
             completion_date=parsed_data.get("completion_date"),
             certificate_number=parsed_data.get("certificate_number", ""),
-            document_filename=upload_result.get("filename"),
-            document_url=upload_result.get("file_url"),
+            # Parsing metadata
             confidence_score=parsing_result.get("confidence_score", 0.0),
-            raw_extracted_text=parsing_result.get("raw_text", ""),
+            parsing_method=parsing_result.get("processing_method", "google_vision_api"),
+            raw_text=parsing_result.get("raw_text", ""),
+            # System fields
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
         )
 
         db.add(cpe_record)
@@ -241,8 +300,12 @@ async def upload_certificate_authenticated(
                 "certificate_display": {
                     "course_title": cpe_record.course_title,
                     "provider": cpe_record.provider,
-                    "cpe_hours": float(cpe_record.cpe_hours),
-                    "ethics_hours": float(cpe_record.ethics_hours),
+                    "cpe_hours": float(
+                        cpe_record.cpe_credits
+                    ),  # Map back to frontend expectation
+                    "ethics_hours": float(
+                        cpe_record.ethics_credits
+                    ),  # Map back to frontend expectation
                     "completion_date": cpe_record.completion_date,
                     "certificate_number": cpe_record.certificate_number,
                     "processing_quality": get_processing_quality(
@@ -391,12 +454,11 @@ async def get_certificates(
                 "id": cert.id,
                 "course_title": cert.course_title,
                 "provider": cert.provider,
-                "cpe_hours": cert.cpe_hours,
-                "ethics_hours": cert.ethics_hours,
+                "cpe_hours": cert.cpe_credits,  # Map to frontend expectation
+                "ethics_hours": cert.ethics_credits,  # Map to frontend expectation
                 "completion_date": cert.completion_date,
                 "certificate_number": cert.certificate_number,
                 "confidence_score": cert.confidence_score,
-                "document_url": cert.document_url,
                 "document_filename": cert.document_filename,
                 "created_at": cert.created_at,
                 "updated_at": cert.updated_at,
@@ -405,19 +467,18 @@ async def get_certificates(
                     "processing_quality": get_processing_quality(
                         cert.confidence_score or 0.0
                     ),
-                    "has_ethics": bool(cert.ethics_hours and cert.ethics_hours > 0),
-                    "total_credits": float(cert.cpe_hours or 0)
-                    + float(cert.ethics_hours or 0),
+                    "has_ethics": bool(cert.ethics_credits and cert.ethics_credits > 0),
+                    "total_credits": float(cert.cpe_credits or 0)
+                    + float(cert.ethics_credits or 0),
                     "file_type": (
                         cert.document_filename.split(".")[-1].upper()
                         if cert.document_filename
                         else "UNKNOWN"
                     ),
                     "extracted_text_preview": (
-                        cert.raw_extracted_text[:200] + "..."
-                        if cert.raw_extracted_text
-                        and len(cert.raw_extracted_text) > 200
-                        else cert.raw_extracted_text
+                        cert.raw_text[:200] + "..."
+                        if cert.raw_text and len(cert.raw_text) > 200
+                        else cert.raw_text
                     ),
                 },
             }
@@ -425,9 +486,11 @@ async def get_certificates(
         ],
         "total": len(certificates),
         "summary": {
-            "total_cpe_hours": sum(float(cert.cpe_hours or 0) for cert in certificates),
+            "total_cpe_hours": sum(
+                float(cert.cpe_credits or 0) for cert in certificates
+            ),
             "total_ethics_hours": sum(
-                float(cert.ethics_hours or 0) for cert in certificates
+                float(cert.ethics_credits or 0) for cert in certificates
             ),
             "certificates_count": len(certificates),
             "high_confidence_count": len(
@@ -468,14 +531,14 @@ async def get_certificate_details(
             "id": cpe_record.id,
             "course_title": cpe_record.course_title,
             "provider": cpe_record.provider,
-            "cpe_hours": cpe_record.cpe_hours,
-            "ethics_hours": cpe_record.ethics_hours,
+            "cpe_hours": cpe_record.cpe_credits,  # Map to frontend expectation
+            "ethics_hours": cpe_record.ethics_credits,  # Map to frontend expectation
             "completion_date": cpe_record.completion_date,
             "certificate_number": cpe_record.certificate_number,
             "confidence_score": cpe_record.confidence_score,
             "document_url": cpe_record.document_url,
             "document_filename": cpe_record.document_filename,
-            "raw_extracted_text": cpe_record.raw_extracted_text,
+            "raw_extracted_text": cpe_record.raw_text,  # Use correct field name
             "created_at": cpe_record.created_at,
             "updated_at": cpe_record.updated_at,
             # Enhanced display information
@@ -484,20 +547,16 @@ async def get_certificate_details(
                     cpe_record.confidence_score or 0.0
                 ),
                 "has_ethics": bool(
-                    cpe_record.ethics_hours and cpe_record.ethics_hours > 0
+                    cpe_record.ethics_credits and cpe_record.ethics_credits > 0
                 ),
-                "total_credits": float(cpe_record.cpe_hours or 0)
-                + float(cpe_record.ethics_hours or 0),
+                "total_credits": float(cpe_record.cpe_credits or 0)
+                + float(cpe_record.ethics_credits or 0),
                 "file_type": (
                     cpe_record.document_filename.split(".")[-1].upper()
                     if cpe_record.document_filename
                     else "UNKNOWN"
                 ),
-                "text_length": (
-                    len(cpe_record.raw_extracted_text)
-                    if cpe_record.raw_extracted_text
-                    else 0
-                ),
+                "text_length": len(cpe_record.raw_text) if cpe_record.raw_text else 0,
                 "has_certificate_number": bool(cpe_record.certificate_number),
                 "completion_date_formatted": (
                     cpe_record.completion_date.strftime("%B %d, %Y")
