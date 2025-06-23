@@ -551,26 +551,30 @@ class EnhancedVisionService:
     async def extract_text_from_pdf(self, file_content: bytes) -> str:
         """Extract text from PDF using Google Vision API"""
         try:
-            # Convert PDF to images and extract text
-            document = vision.Document(content=file_content)
-            request = vision.AnnotateFileRequest(
-                features=[
-                    vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
-                ],
-                input_config=vision.InputConfig(
-                    content=file_content, mime_type="application/pdf"
-                ),
+            # Create the request for PDF processing
+            input_config = vision.InputConfig(
+                content=file_content, mime_type="application/pdf"
             )
 
+            features = [
+                vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
+            ]
+
+            request = vision.AnnotateFileRequest(
+                features=features, input_config=input_config
+            )
+
+            # Process the PDF
             response = self.vision_client.batch_annotate_files(requests=[request])
 
             # Extract text from all pages
             full_text = ""
-            for page in response.responses[0].responses:
-                if page.full_text_annotation:
-                    full_text += page.full_text_annotation.text + "\n"
+            if response.responses:
+                for page_response in response.responses[0].responses:
+                    if page_response.full_text_annotation:
+                        full_text += page_response.full_text_annotation.text + "\n"
 
-            return full_text
+            return full_text.strip()
 
         except Exception as e:
             logger.error(f"Google Vision API error: {str(e)}")
