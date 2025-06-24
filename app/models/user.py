@@ -60,7 +60,7 @@ class User(Base):
     # Relationships
     subscriptions = relationship("Subscription", back_populates="user")
     cpe_records = relationship(
-        "CPERecord", back_populates="user", cascade="all, delete-orphan"
+        "CPERecord", foreign_keys="CPERecord.user_id", back_populates="user"
     )
 
     def __repr__(self):

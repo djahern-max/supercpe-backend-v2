@@ -1,8 +1,8 @@
 """Simplified CPE record schema
 
-Revision ID: 713db26bcf1e
+Revision ID: 249bd10eb7ee
 Revises: 
-Create Date: 2025-06-23 19:55:06.077223
+Create Date: 2025-06-23 20:19:54.940400
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '713db26bcf1e'
+revision: str = '249bd10eb7ee'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
