@@ -1,4 +1,4 @@
-# app/services/vision_service.py - WORKING VERSION (Based on your original setup)
+# app/services/vision_service.py - FIXED VERSION
 
 import logging
 import re
@@ -37,16 +37,28 @@ class EnhancedVisionService:
             logger.error(f"Error extracting text from image: {e}")
             return ""
 
-    async def extract_text_from_pdf(self, pdf_content: bytes) -> str:
-        """Extract text from PDF by converting to images first, then using Google Vision OCR
+    async def extract_text_from_pdf(
+        self, content: bytes, content_type: str = None
+    ) -> str:
+        """Extract text from PDF or image based on content type
 
-        This is how it was working before - using pdf2image + Google Vision
+        FIXED: Now accepts content_type parameter to handle both PDFs and images
         """
         try:
-            logger.info(f"Processing PDF with {len(pdf_content)} bytes")
+            logger.info(
+                f"Processing file with content_type: {content_type}, size: {len(content)} bytes"
+            )
 
-            # Convert PDF to images using pdf2image (which you already have)
-            images = convert_from_bytes(pdf_content, dpi=300, first_page=1, last_page=3)
+            # Handle images directly
+            if content_type and content_type.startswith("image/"):
+                logger.info("Processing as image file")
+                return self.extract_text_from_image(content)
+
+            # Handle PDFs (default behavior)
+            logger.info("Processing as PDF file")
+
+            # Convert PDF to images using pdf2image
+            images = convert_from_bytes(content, dpi=300, first_page=1, last_page=3)
             logger.info(f"Converted PDF to {len(images)} images")
 
             full_text = ""
@@ -85,8 +97,8 @@ class EnhancedVisionService:
             return full_text.strip()
 
         except Exception as e:
-            logger.error(f"Error extracting text from PDF: {e}")
-            logger.exception("Full PDF processing error:")
+            logger.error(f"Error extracting text from file: {e}")
+            logger.exception("Full file processing error:")
             return ""
 
     def parse_cpe_certificate(self, raw_text: str) -> Dict:
@@ -191,12 +203,11 @@ class EnhancedVisionService:
         ]
 
         for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
                 try:
-                    credits = float(matches[0])
-                    # Reasonable bounds for CPE credits
-                    if 0.5 <= credits <= 50:
+                    credits = float(match.group(1))
+                    if 0.0 < credits <= 50.0:  # Reasonable range
                         logger.info(f"Found CPE credits: {credits}")
                         return credits
                 except ValueError:
@@ -205,19 +216,19 @@ class EnhancedVisionService:
         return 0.0
 
     def _extract_ethics_credits(self, text: str) -> float:
-        """Extract ethics credits if mentioned"""
+        """Extract ethics credits"""
         patterns = [
-            r"Ethics?\s+Credits?:\s*(\d+(?:\.\d+)?)",
-            r"(\d+(?:\.\d+)?)\s+Ethics?\s+Credits?",
-            r"Professional\s+Ethics?\s+CPE:\s*(\d+(?:\.\d+)?)",
+            r"Ethics\s+Credits?:\s*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s+Ethics\s+Credits?",
+            r"Ethics:\s*(\d+(?:\.\d+)?)",
         ]
 
         for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
                 try:
-                    credits = float(matches[0])
-                    if 0.0 <= credits <= 10:  # Ethics credits are usually smaller
+                    credits = float(match.group(1))
+                    if 0.0 < credits <= 20.0:  # Reasonable range
                         logger.info(f"Found ethics credits: {credits}")
                         return credits
                 except ValueError:
@@ -228,75 +239,62 @@ class EnhancedVisionService:
     def _extract_completion_date(self, text: str) -> Optional[date]:
         """Extract completion date"""
         patterns = [
-            r"(?:completion date|completed on|date completed|date):\s*(\w+,?\s+\w+\s+\d{1,2},?\s+\d{4})",
-            r"(?:date|completed):\s*(\d{1,2}[/-]\d{1,2}[/-]\d{4})",
-            r"(\w+\s+\d{1,2},?\s+\d{4})",  # "June 6, 2025"
-            r"(\d{1,2}[/-]\d{1,2}[/-]\d{4})",  # "6/6/2025"
+            r"(?:completion date|completed|date completed):\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+            r"(?:on|dated)\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
         ]
 
         for pattern in patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
                 try:
-                    # Try different date parsing approaches
-                    parsed_date = self._parse_date_string(match)
-                    if parsed_date:
-                        logger.info(f"Found completion date: {parsed_date}")
-                        return parsed_date
-                except:
+                    # Try different date formats
+                    for fmt in ["%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y"]:
+                        try:
+                            parsed_date = datetime.strptime(match, fmt).date()
+                            # Validate reasonable date range
+                            if (
+                                datetime(2000, 1, 1).date()
+                                <= parsed_date
+                                <= datetime.now().date()
+                            ):
+                                logger.info(f"Found completion date: {parsed_date}")
+                                return parsed_date
+                        except ValueError:
+                            continue
+                except Exception:
                     continue
 
         return None
 
-    def _parse_date_string(self, date_str: str) -> Optional[date]:
-        """Parse various date string formats"""
-        date_str = date_str.strip()
-
-        formats = [
-            "%B %d, %Y",  # "June 6, 2025"
-            "%b %d, %Y",  # "Jun 6, 2025"
-            "%m/%d/%Y",  # "6/6/2025"
-            "%m-%d-%Y",  # "6-6-2025"
-            "%Y-%m-%d",  # "2025-06-06"
-            "%d/%m/%Y",  # "6/6/2025" (day first)
-        ]
-
-        for fmt in formats:
-            try:
-                return datetime.strptime(date_str, fmt).date()
-            except ValueError:
-                continue
-
-        return None
-
     def _extract_certificate_number(self, text: str) -> Optional[str]:
-        """Extract certificate number if present"""
+        """Extract certificate number"""
         patterns = [
-            r"Certificate\s+(?:Number|#|ID):\s*([A-Z0-9-]+)",
-            r"Certificate\s+ID:\s*([A-Z0-9-]+)",
-            r"(?:ID|Number):\s*([A-Z0-9-]{5,20})",
-            r"Confirmation\s+(?:Number|#):\s*([A-Z0-9-]+)",
+            r"(?:certificate|cert|reference)\s+(?:number|#|no):\s*([A-Z0-9-]+)",
+            r"(?:confirmation|ref)\s+(?:number|#|no):\s*([A-Z0-9-]+)",
+            r"#([A-Z0-9-]{5,})",
         ]
 
         for pattern in patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 cert_num = match.group(1).strip()
-                if len(cert_num) >= 3:
+                if len(cert_num) >= 5:
                     logger.info(f"Found certificate number: {cert_num}")
                     return cert_num
 
         return None
 
     def _calculate_confidence(self, text: str) -> float:
-        """Calculate parsing confidence based on data found"""
+        """Calculate confidence score based on found indicators"""
         confidence = 0.0
 
-        # Key indicators of a valid CPE certificate
+        # Indicators that suggest this is a CPE certificate
         indicators = [
             (r"CPE|Continuing Professional Education", 0.3),
-            (r"Certificate of Completion", 0.2),
-            (r"Credits?", 0.2),
+            (r"certificate", 0.2),
+            (r"completion", 0.2),
+            (r"credits?", 0.2),
             (r"NASBA", 0.2),
             (r"CPA", 0.1),
         ]
