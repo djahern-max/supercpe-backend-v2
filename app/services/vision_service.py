@@ -1,10 +1,13 @@
-# app/services/vision_service.py - FIXED VERSION (Google Cloud Vision Only)
+# app/services/vision_service.py - WORKING VERSION (Based on your original setup)
 
 import logging
 import re
+import io
 from typing import Dict, Optional, List
 from datetime import datetime, date
 from google.cloud import vision
+from pdf2image import convert_from_bytes
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -35,51 +38,56 @@ class EnhancedVisionService:
             return ""
 
     async def extract_text_from_pdf(self, pdf_content: bytes) -> str:
-        """Extract text from PDF using Google Cloud Vision API
+        """Extract text from PDF by converting to images first, then using Google Vision OCR
 
-        Google Cloud Vision can process PDF files directly!
+        This is how it was working before - using pdf2image + Google Vision
         """
         try:
-            # Create InputConfig for PDF
-            input_config = vision.InputConfig(
-                gcs_source=None,  # We're using content directly
-                content=pdf_content,
-                mime_type="application/pdf",
-            )
+            logger.info(f"Processing PDF with {len(pdf_content)} bytes")
 
-            # Create OutputConfig (we'll get the response directly)
-            output_config = vision.OutputConfig(gcs_destination=None, batch_size=1)
+            # Convert PDF to images using pdf2image (which you already have)
+            images = convert_from_bytes(pdf_content, dpi=300, first_page=1, last_page=3)
+            logger.info(f"Converted PDF to {len(images)} images")
 
-            # For small PDFs, we can use document_text_detection directly
-            # Convert to image format that Vision API can handle
-            image = vision.Image(content=pdf_content)
-            response = self.client.document_text_detection(image=image)
-
-            if response.error.message:
-                logger.warning(
-                    f"PDF direct processing failed: {response.error.message}"
-                )
-                # Fallback: Try as image
-                return self.extract_text_from_image(pdf_content)
-
-            # Extract full text from document
             full_text = ""
-            if response.full_text_annotation:
-                full_text = response.full_text_annotation.text
 
-            logger.info(
-                f"Extracted {len(full_text)} characters from PDF using Google Vision"
-            )
-            return full_text
+            for i, image in enumerate(images):
+                try:
+                    # Convert PIL Image to bytes
+                    img_byte_arr = io.BytesIO()
+                    image.save(img_byte_arr, format="PNG")
+                    img_byte_arr = img_byte_arr.getvalue()
+
+                    # Extract text from this page using Google Vision
+                    page_text = self.extract_text_from_image(img_byte_arr)
+
+                    if page_text:
+                        full_text += f"\n--- Page {i+1} ---\n{page_text}\n"
+                        logger.info(
+                            f"Extracted {len(page_text)} characters from page {i+1}"
+                        )
+                    else:
+                        logger.warning(f"No text extracted from page {i+1}")
+
+                except Exception as page_error:
+                    logger.error(f"Error processing page {i+1}: {page_error}")
+                    continue
+
+            logger.info(f"Total extracted text length: {len(full_text)}")
+
+            # Log a sample of the extracted text for debugging
+            if full_text:
+                sample = full_text[:200].replace("\n", " ")
+                logger.info(f"Extracted text sample: {sample}...")
+            else:
+                logger.error("No text was extracted from any pages!")
+
+            return full_text.strip()
 
         except Exception as e:
             logger.error(f"Error extracting text from PDF: {e}")
-            # Fallback: try treating PDF as image
-            try:
-                return self.extract_text_from_image(pdf_content)
-            except Exception as fallback_error:
-                logger.error(f"Fallback image processing also failed: {fallback_error}")
-                return ""
+            logger.exception("Full PDF processing error:")
+            return ""
 
     def parse_cpe_certificate(self, raw_text: str) -> Dict:
         """
@@ -87,7 +95,10 @@ class EnhancedVisionService:
         Focus on reliability over completeness.
         """
         if not raw_text:
+            logger.warning("No raw text provided to parse_cpe_certificate")
             return self._empty_result()
+
+        logger.info(f"Parsing certificate with {len(raw_text)} characters of text")
 
         try:
             result = {
@@ -100,25 +111,34 @@ class EnhancedVisionService:
                 "confidence_score": self._calculate_confidence(raw_text),
             }
 
+            # Log what we found
+            logger.info(f"Parsing results:")
+            for key, value in result.items():
+                if value is not None and value != "" and value != 0.0:
+                    logger.info(f"  {key}: {value}")
+
             # Only return fields where we have reasonable confidence
             filtered_result = {}
             for key, value in result.items():
                 if value is not None and value != "" and value != 0.0:
                     filtered_result[key] = value
 
+            logger.info(f"Filtered results: {len(filtered_result)} fields")
             return filtered_result
 
         except Exception as e:
             logger.error(f"Error parsing certificate: {e}")
+            logger.exception("Full parsing error:")
             return self._empty_result()
 
     def _extract_course_title(self, text: str) -> Optional[str]:
         """Extract course title - look for common patterns"""
         patterns = [
-            r"(?:course title|title|course|subject):\s*([^\n\r]+)",
+            r"(?:course title|course name|title|course|subject):\s*([^\n\r]+)",
             r"(?:successfully completing|completion of)\s+([^\n\r]+)",
             r"certificate of completion\s+(?:for|awarded to).*?(?:for|in)\s+([^\n\r]+)",
-            r"(?:course|program):\s*([^\n\r]+)",
+            r"(?:course|program|seminar):\s*([^\n\r]+)",
+            r"subject:\s*([^\n\r]+)",
         ]
 
         for pattern in patterns:
@@ -128,7 +148,10 @@ class EnhancedVisionService:
                 # Clean up common artifacts
                 title = re.sub(r"^(for|in|of)\s+", "", title, flags=re.IGNORECASE)
                 title = re.sub(r"\s+", " ", title)  # Normalize whitespace
-                if len(title) > 10 and len(title) < 200:  # Reasonable length
+                title = title.strip()
+
+                if len(title) > 5 and len(title) < 200:  # Reasonable length
+                    logger.info(f"Found course title: {title}")
                     return title
 
         return None
@@ -136,9 +159,10 @@ class EnhancedVisionService:
     def _extract_provider(self, text: str) -> Optional[str]:
         """Extract provider/sponsor name"""
         patterns = [
-            r"(?:provider|sponsor|sponsored by|offered by):\s*([^\n\r]+)",
+            r"(?:provider|sponsor|sponsored by|offered by|presenter):\s*([^\n\r]+)",
             r"^([A-Z][^\n\r]*(?:CPE|Education|Institute|University|College|Academy))",
             r"NASBA\s+Sponsor[^\n\r]*\n([^\n\r]+)",
+            r"([A-Z][a-zA-Z\s&,\.]+(?:LLC|Inc|Corporation|Institute|Academy|University))",
         ]
 
         for pattern in patterns:
@@ -148,7 +172,10 @@ class EnhancedVisionService:
                 # Clean up
                 provider = re.sub(r"[®™©]", "", provider)
                 provider = re.sub(r"\s+", " ", provider)
+                provider = provider.strip()
+
                 if len(provider) > 3 and len(provider) < 100:
+                    logger.info(f"Found provider: {provider}")
                     return provider
 
         return None
@@ -160,6 +187,7 @@ class EnhancedVisionService:
             r"(\d+(?:\.\d+)?)\s+CPE\s+Credits?",
             r"Credits?:\s*(\d+(?:\.\d+)?)",
             r"(\d+(?:\.\d+)?)\s+(?:hours?|credits?)\s+(?:of\s+)?CPE",
+            r"(\d+(?:\.\d+)?)\s+CPE\s+(?:hours?|credits?)",
         ]
 
         for pattern in patterns:
@@ -169,6 +197,7 @@ class EnhancedVisionService:
                     credits = float(matches[0])
                     # Reasonable bounds for CPE credits
                     if 0.5 <= credits <= 50:
+                        logger.info(f"Found CPE credits: {credits}")
                         return credits
                 except ValueError:
                     continue
@@ -189,6 +218,7 @@ class EnhancedVisionService:
                 try:
                     credits = float(matches[0])
                     if 0.0 <= credits <= 10:  # Ethics credits are usually smaller
+                        logger.info(f"Found ethics credits: {credits}")
                         return credits
                 except ValueError:
                     continue
@@ -198,9 +228,10 @@ class EnhancedVisionService:
     def _extract_completion_date(self, text: str) -> Optional[date]:
         """Extract completion date"""
         patterns = [
-            r"(?:completion date|completed on|date):\s*(\w+,?\s+\w+\s+\d{1,2},?\s+\d{4})",
+            r"(?:completion date|completed on|date completed|date):\s*(\w+,?\s+\w+\s+\d{1,2},?\s+\d{4})",
             r"(?:date|completed):\s*(\d{1,2}[/-]\d{1,2}[/-]\d{4})",
             r"(\w+\s+\d{1,2},?\s+\d{4})",  # "June 6, 2025"
+            r"(\d{1,2}[/-]\d{1,2}[/-]\d{4})",  # "6/6/2025"
         ]
 
         for pattern in patterns:
@@ -210,6 +241,7 @@ class EnhancedVisionService:
                     # Try different date parsing approaches
                     parsed_date = self._parse_date_string(match)
                     if parsed_date:
+                        logger.info(f"Found completion date: {parsed_date}")
                         return parsed_date
                 except:
                     continue
@@ -226,6 +258,7 @@ class EnhancedVisionService:
             "%m/%d/%Y",  # "6/6/2025"
             "%m-%d-%Y",  # "6-6-2025"
             "%Y-%m-%d",  # "2025-06-06"
+            "%d/%m/%Y",  # "6/6/2025" (day first)
         ]
 
         for fmt in formats:
@@ -239,9 +272,10 @@ class EnhancedVisionService:
     def _extract_certificate_number(self, text: str) -> Optional[str]:
         """Extract certificate number if present"""
         patterns = [
-            r"Certificate\s+(?:Number|#):\s*([A-Z0-9-]+)",
+            r"Certificate\s+(?:Number|#|ID):\s*([A-Z0-9-]+)",
             r"Certificate\s+ID:\s*([A-Z0-9-]+)",
             r"(?:ID|Number):\s*([A-Z0-9-]{5,20})",
+            r"Confirmation\s+(?:Number|#):\s*([A-Z0-9-]+)",
         ]
 
         for pattern in patterns:
@@ -249,6 +283,7 @@ class EnhancedVisionService:
             if match:
                 cert_num = match.group(1).strip()
                 if len(cert_num) >= 3:
+                    logger.info(f"Found certificate number: {cert_num}")
                     return cert_num
 
         return None
@@ -270,6 +305,7 @@ class EnhancedVisionService:
             if re.search(pattern, text, re.IGNORECASE):
                 confidence += weight
 
+        logger.info(f"Calculated confidence score: {confidence}")
         return min(confidence, 1.0)
 
     def _empty_result(self) -> Dict:
