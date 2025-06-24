@@ -80,7 +80,7 @@ def validate_file(file: UploadFile):
 
 
 async def process_with_ai(file: UploadFile, license_number: str):
-    """AI processing using Google Vision API"""
+    """AI processing using Google Vision API - handles both PDFs and images"""
     try:
         from app.services.vision_service import EnhancedVisionService
 
@@ -90,8 +90,14 @@ async def process_with_ai(file: UploadFile, license_number: str):
         await file.seek(0)
         content = await file.read()
 
-        # Extract text using Google Vision API
-        raw_text = await vision_service.extract_text_from_pdf(content)
+        logger.info(
+            f"Processing file: {file.filename}, content_type: {file.content_type}, size: {len(content)} bytes"
+        )
+
+        # Extract text using Google Vision API - now handles both PDFs and images
+        raw_text = await vision_service.extract_text_from_pdf(
+            content, file.content_type
+        )
 
         # Parse CPE data
         parsed_data = vision_service.parse_cpe_certificate(raw_text)
@@ -106,6 +112,7 @@ async def process_with_ai(file: UploadFile, license_number: str):
 
     except Exception as e:
         logger.error(f"Vision API processing failed: {e}")
+        logger.exception("Full vision processing error:")
         raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
 
 
