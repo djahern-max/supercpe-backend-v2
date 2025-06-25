@@ -1,8 +1,8 @@
-"""Simplified CPE record schema
+"""create simplified user model and new cpe record schema
 
-Revision ID: 249bd10eb7ee
+Revision ID: 074a22482e21
 Revises: 
-Create Date: 2025-06-23 20:19:54.940400
+Create Date: 2025-06-24 20:10:52.598991
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '249bd10eb7ee'
+revision: str = '074a22482e21'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -68,83 +68,61 @@ def upgrade() -> None:
     op.create_index(op.f('ix_payments_stripe_subscription_id'), 'payments', ['stripe_subscription_id'], unique=False)
     op.create_table('users',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('email', sa.String(), nullable=True),
-    sa.Column('name', sa.String(), nullable=True),
-    sa.Column('license_number', sa.String(), nullable=True),
-    sa.Column('hashed_password', sa.String(), nullable=True),
-    sa.Column('auth_provider', sa.String(), nullable=True),
-    sa.Column('oauth_id', sa.String(), nullable=True),
-    sa.Column('oauth_access_token', sa.Text(), nullable=True),
-    sa.Column('oauth_refresh_token', sa.Text(), nullable=True),
-    sa.Column('oauth_token_expires', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('profile_picture', sa.String(), nullable=True),
-    sa.Column('user_metadata', sa.JSON(), nullable=True),
-    sa.Column('is_verified', sa.Boolean(), nullable=True),
-    sa.Column('is_active', sa.Boolean(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('last_login', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('accepted_extended_trial', sa.Boolean(), nullable=False),
-    sa.Column('extended_trial_accepted_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('initial_trial_completed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('email', sa.String(length=255), nullable=False),
+    sa.Column('full_name', sa.String(length=200), nullable=False),
+    sa.Column('license_number', sa.String(length=20), nullable=False),
+    sa.Column('hashed_password', sa.String(length=255), nullable=False),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('is_verified', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('last_login', sa.DateTime(), nullable=True),
+    sa.Column('trial_uploads_used', sa.Integer(), nullable=False),
+    sa.Column('is_premium', sa.Boolean(), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index(op.f('ix_users_accepted_extended_trial'), 'users', ['accepted_extended_trial'], unique=False)
     op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
     op.create_index(op.f('ix_users_id'), 'users', ['id'], unique=False)
     op.create_index(op.f('ix_users_license_number'), 'users', ['license_number'], unique=False)
-    op.create_index(op.f('ix_users_oauth_id'), 'users', ['oauth_id'], unique=False)
     op.create_table('cpe_records',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('cpa_license_number', sa.String(length=20), nullable=False),
-    sa.Column('user_id', sa.Integer(), nullable=True),
-    sa.Column('document_filename', sa.String(length=500), nullable=False),
-    sa.Column('original_filename', sa.String(length=255), nullable=True),
-    sa.Column('cpe_credits', sa.Float(), nullable=False),
-    sa.Column('ethics_credits', sa.Float(), nullable=False),
-    sa.Column('course_title', sa.String(length=500), nullable=True),
-    sa.Column('provider', sa.String(length=255), nullable=True),
-    sa.Column('completion_date', sa.Date(), nullable=True),
-    sa.Column('certificate_number', sa.String(length=100), nullable=True),
-    sa.Column('confidence_score', sa.Float(), nullable=True),
-    sa.Column('parsing_method', sa.String(length=50), nullable=True),
-    sa.Column('raw_text', sa.Text(), nullable=True),
-    sa.Column('parsing_notes', sa.Text(), nullable=True),
-    sa.Column('storage_tier', sa.String(length=20), nullable=True),
-    sa.Column('is_verified', sa.Boolean(), nullable=True),
-    sa.Column('verified_by', sa.Integer(), nullable=True),
-    sa.Column('verification_date', sa.DateTime(), nullable=True),
-    sa.Column('created_at', sa.DateTime(), nullable=True),
-    sa.Column('updated_at', sa.DateTime(), nullable=True),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('date_completed', sa.Date(), nullable=False, comment='Date when the course was completed'),
+    sa.Column('course_type', sa.String(length=100), nullable=False, comment='Type/category of the course'),
+    sa.Column('subject_area', sa.String(length=200), nullable=False, comment='Subject area or field of study'),
+    sa.Column('name_of_course', sa.String(length=500), nullable=False, comment='Full name/title of the course'),
+    sa.Column('educational_provider', sa.String(length=300), nullable=False, comment='Institution or organization providing the course'),
+    sa.Column('subject', sa.String(length=300), nullable=True, comment='Additional subject details or description'),
+    sa.Column('is_verified', sa.Boolean(), nullable=True, comment='Whether record has been verified'),
+    sa.Column('verified_by', sa.Integer(), nullable=True, comment='User who verified this record'),
+    sa.Column('verification_date', sa.DateTime(), nullable=True, comment='When the record was verified'),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.ForeignKeyConstraint(['verified_by'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index(op.f('ix_cpe_records_cpa_license_number'), 'cpe_records', ['cpa_license_number'], unique=False)
     op.create_index(op.f('ix_cpe_records_id'), 'cpe_records', ['id'], unique=False)
     op.create_index(op.f('ix_cpe_records_user_id'), 'cpe_records', ['user_id'], unique=False)
     op.create_table('subscriptions',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('user_id', sa.Integer(), nullable=True),
-    sa.Column('license_number', sa.String(), nullable=True),
-    sa.Column('stripe_customer_id', sa.String(), nullable=True),
-    sa.Column('stripe_subscription_id', sa.String(), nullable=True),
-    sa.Column('stripe_price_id', sa.String(), nullable=True),
-    sa.Column('plan_type', sa.String(), nullable=True),
-    sa.Column('amount', sa.Float(), nullable=True),
-    sa.Column('status', sa.String(), nullable=True),
-    sa.Column('current_period_start', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('current_period_end', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('cancel_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('canceled_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('subscription_metadata', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('stripe_customer_id', sa.String(length=255), nullable=True),
+    sa.Column('stripe_subscription_id', sa.String(length=255), nullable=True),
+    sa.Column('stripe_price_id', sa.String(length=255), nullable=True),
+    sa.Column('plan_type', sa.String(length=50), nullable=False),
+    sa.Column('amount', sa.Float(), nullable=False),
+    sa.Column('status', sa.String(length=50), nullable=False),
+    sa.Column('current_period_start', sa.DateTime(), nullable=False),
+    sa.Column('current_period_end', sa.DateTime(), nullable=False),
+    sa.Column('cancel_at', sa.DateTime(), nullable=True),
+    sa.Column('canceled_at', sa.DateTime(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_subscriptions_id'), 'subscriptions', ['id'], unique=False)
-    op.create_index(op.f('ix_subscriptions_license_number'), 'subscriptions', ['license_number'], unique=False)
     op.create_index(op.f('ix_subscriptions_stripe_customer_id'), 'subscriptions', ['stripe_customer_id'], unique=False)
     op.create_index(op.f('ix_subscriptions_stripe_subscription_id'), 'subscriptions', ['stripe_subscription_id'], unique=True)
     op.create_index(op.f('ix_subscriptions_user_id'), 'subscriptions', ['user_id'], unique=False)
@@ -156,18 +134,14 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_subscriptions_user_id'), table_name='subscriptions')
     op.drop_index(op.f('ix_subscriptions_stripe_subscription_id'), table_name='subscriptions')
     op.drop_index(op.f('ix_subscriptions_stripe_customer_id'), table_name='subscriptions')
-    op.drop_index(op.f('ix_subscriptions_license_number'), table_name='subscriptions')
     op.drop_index(op.f('ix_subscriptions_id'), table_name='subscriptions')
     op.drop_table('subscriptions')
     op.drop_index(op.f('ix_cpe_records_user_id'), table_name='cpe_records')
     op.drop_index(op.f('ix_cpe_records_id'), table_name='cpe_records')
-    op.drop_index(op.f('ix_cpe_records_cpa_license_number'), table_name='cpe_records')
     op.drop_table('cpe_records')
-    op.drop_index(op.f('ix_users_oauth_id'), table_name='users')
     op.drop_index(op.f('ix_users_license_number'), table_name='users')
     op.drop_index(op.f('ix_users_id'), table_name='users')
     op.drop_index(op.f('ix_users_email'), table_name='users')
-    op.drop_index(op.f('ix_users_accepted_extended_trial'), table_name='users')
     op.drop_table('users')
     op.drop_index(op.f('ix_payments_stripe_subscription_id'), table_name='payments')
     op.drop_index(op.f('ix_payments_stripe_payment_intent_id'), table_name='payments')

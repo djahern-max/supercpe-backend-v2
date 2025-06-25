@@ -6,8 +6,6 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
-    Text,
-    JSON,
     Float,
 )
 from sqlalchemy.sql import func
@@ -18,87 +16,89 @@ from app.core.database import Base
 class User(Base):
     __tablename__ = "users"
 
+    # Primary key
     id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True)
-    name = Column(String)
-    license_number = Column(String, index=True)
 
-    # Password fields (for regular email auth)
-    hashed_password = Column(
-        String, nullable=True
-    )  # Nullable because Google users won't have a password
+    # Basic user info
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    full_name = Column(String(200), nullable=False)
+    license_number = Column(String(20), index=True, nullable=False)
 
-    # OAuth fields
-    auth_provider = Column(String, default="email")  # "email", "google", etc.
-    oauth_id = Column(String, nullable=True, index=True)  # Google's unique user ID
-    oauth_access_token = Column(Text, nullable=True)
-    oauth_refresh_token = Column(Text, nullable=True)
-    oauth_token_expires = Column(DateTime(timezone=True), nullable=True)
-
-    # User profile data
-    profile_picture = Column(
-        String, nullable=True
-    )  # URL to profile picture (useful for Google profiles)
-
-    # Additional user data
-    user_metadata = Column(
-        JSON, nullable=True
-    )  # Renamed from 'metadata' to avoid SQLAlchemy reserved name
+    # Authentication
+    hashed_password = Column(String(255), nullable=False)
 
     # Account status
-    is_verified = Column(Boolean, default=False)
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_verified = Column(Boolean, default=False, nullable=False)
 
     # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    last_login = Column(DateTime(timezone=True), nullable=True)
-    accepted_extended_trial = Column(Boolean, default=False, nullable=False, index=True)
-    extended_trial_accepted_at = Column(DateTime(timezone=True), nullable=True)
-    initial_trial_completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    last_login = Column(DateTime, nullable=True)
+
+    # Trial/subscription tracking (keep if you're using trials)
+    trial_uploads_used = Column(Integer, default=0, nullable=False)
+    is_premium = Column(Boolean, default=False, nullable=False)
 
     # Relationships
+    cpe_records = relationship("CPERecord", back_populates="user")
     subscriptions = relationship("Subscription", back_populates="user")
-    cpe_records = relationship(
-        "CPERecord", foreign_keys="CPERecord.user_id", back_populates="user"
-    )
 
     def __repr__(self):
-        return f"<User(id={self.id}, email='{self.email}', auth_provider='{self.auth_provider}')>"
+        return f"<User(id={self.id}, email='{self.email}', license='{self.license_number}')>"
+
+    @property
+    def remaining_trial_uploads(self):
+        """Calculate remaining trial uploads"""
+        max_trial_uploads = 10  # or whatever your limit is
+        return max(0, max_trial_uploads - self.trial_uploads_used)
+
+    @property
+    def can_upload(self):
+        """Check if user can upload more files"""
+        return self.is_premium or self.remaining_trial_uploads > 0
 
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
 
+    # Primary key
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True)
-    license_number = Column(String, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
     # Stripe subscription data
-    stripe_customer_id = Column(String, index=True)
-    stripe_subscription_id = Column(String, unique=True, index=True)
-    stripe_price_id = Column(String)
+    stripe_customer_id = Column(String(255), index=True)
+    stripe_subscription_id = Column(String(255), unique=True, index=True)
+    stripe_price_id = Column(String(255))
 
     # Subscription details
-    plan_type = Column(String)  # "monthly", "annual"
-    amount = Column(Float)  # Amount in USD
-    status = Column(String)  # "active", "past_due", "canceled", "unpaid", etc.
-    current_period_start = Column(DateTime(timezone=True))
-    current_period_end = Column(DateTime(timezone=True))
-    cancel_at = Column(DateTime(timezone=True), nullable=True)
-    canceled_at = Column(DateTime(timezone=True), nullable=True)
+    plan_type = Column(String(50), nullable=False)  # "monthly", "annual"
+    amount = Column(Float, nullable=False)  # Amount in USD
+    status = Column(
+        String(50), nullable=False
+    )  # "active", "past_due", "canceled", etc.
 
-    # Additional subscription data
-    subscription_metadata = Column(
-        JSON, nullable=True
-    )  # Also renamed to avoid potential issues
+    # Billing periods
+    current_period_start = Column(DateTime, nullable=False)
+    current_period_end = Column(DateTime, nullable=False)
+    cancel_at = Column(DateTime, nullable=True)
+    canceled_at = Column(DateTime, nullable=True)
 
     # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
     # Relationships
     user = relationship("User", back_populates="subscriptions")
 
     def __repr__(self):
         return f"<Subscription(id={self.id}, user_id={self.user_id}, status='{self.status}')>"
+
+    @property
+    def is_active(self):
+        """Check if subscription is currently active"""
+        return self.status in ["active", "trialing"]
