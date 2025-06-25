@@ -12,8 +12,6 @@ from google.cloud import vision
 from pdf2image import convert_from_bytes
 from PIL import Image
 
-# Import our new smart reviewer
-from app.services.smart_certificate_reviewer import SmartCertificateReviewer
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +21,6 @@ class EnhancedVisionService:
 
     def __init__(self):
         self.client = vision.ImageAnnotatorClient()
-        self.smart_reviewer = SmartCertificateReviewer()
 
     def extract_text_from_image(self, image_content: bytes) -> str:
         """Extract raw text from image using Google Vision API"""
