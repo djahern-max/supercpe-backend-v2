@@ -1,8 +1,8 @@
-"""create simplified user model and new cpe record schema
+"""fix cpe record user relationships
 
-Revision ID: 074a22482e21
+Revision ID: 6c4fb8c749a6
 Revises: 
-Create Date: 2025-06-24 20:10:52.598991
+Create Date: 2025-06-24 20:21:35.855595
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '074a22482e21'
+revision: str = '6c4fb8c749a6'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
