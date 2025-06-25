@@ -1,74 +1,67 @@
-# app/schemas/auth.py
-from pydantic import BaseModel, Field, EmailStr
+# app/schemas/auth.py - Clean and simple auth schemas
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
-from app.schemas.user import UserResponse
 
 
 class LoginRequest(BaseModel):
-    """Schema for login requests"""
+    """Standard login with email and password"""
 
-    email: EmailStr = Field(..., description="User email address")
-    password: str = Field(..., description="User password")
+    email: EmailStr
+    password: str
 
 
 class SignupRequest(BaseModel):
-    """Schema for user registration"""
+    """Signup with email, password, and license verification"""
 
-    email: EmailStr = Field(..., description="User email address")
-    password: str = Field(..., min_length=8, description="User password")
-    full_name: str = Field(..., max_length=200, description="Full name")
-    license_number: str = Field(..., max_length=20, description="CPA license number")
+    email: EmailStr
+    password: str = Field(
+        ..., min_length=8, description="Password must be at least 8 characters"
+    )
+    full_name: str = Field(..., min_length=2, max_length=200)
+    license_number: str = Field(..., min_length=3, max_length=20)
+
+
+class PasscodeSignupRequest(BaseModel):
+    """Signup using CPA passcode (no password required initially)"""
+
+    email: EmailStr
+    full_name: str = Field(..., min_length=2, max_length=200)
+    passcode: str = Field(..., min_length=6, max_length=12)
+
+
+class SetPasswordRequest(BaseModel):
+    """Set password for users who signed up with passcode"""
+
+    password: str = Field(
+        ..., min_length=8, description="Password must be at least 8 characters"
+    )
+
+
+class RefreshTokenRequest(BaseModel):
+    """Request to refresh access token"""
+
+    refresh_token: str
 
 
 class TokenResponse(BaseModel):
-    """Schema for token responses"""
+    """Standard token response for all auth endpoints"""
 
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     expires_in: int
-    user: UserResponse
+    user: dict
+    requires_password: Optional[bool] = (
+        None  # For passcode users who need to set password
+    )
 
 
-class PasswordUpdate(BaseModel):
-    """Schema for password updates"""
+class UserInfo(BaseModel):
+    """User information included in token responses"""
 
-    current_password: str = Field(..., description="Current password")
-    new_password: str = Field(..., min_length=8, description="New password")
-
-
-class PasswordResetRequest(BaseModel):
-    """Schema for password reset requests"""
-
-    email: EmailStr = Field(..., description="User email address")
-
-
-class PasswordResetConfirm(BaseModel):
-    """Schema for password reset confirmation"""
-
-    token: str = Field(..., description="Password reset token")
-    new_password: str = Field(..., min_length=8, description="New password")
-
-
-class EmailVerificationRequest(BaseModel):
-    """Schema for email verification requests"""
-
-    token: str = Field(..., description="Email verification token")
-
-
-# License verification schemas
-class LicenseVerificationRequest(BaseModel):
-    """Schema for license verification"""
-
-    license_number: str = Field(..., max_length=20, description="CPA license number")
-    last_name: str = Field(..., max_length=100, description="Last name on license")
-
-
-class LicenseVerificationResponse(BaseModel):
-    """Schema for license verification response"""
-
-    is_valid: bool
-    license_number: str
-    full_name: Optional[str] = None
-    expiration_date: Optional[str] = None
-    status: Optional[str] = None
-    message: str
+    id: int
+    email: str
+    full_name: str
+    license_number: Optional[str] = None
+    is_verified: bool
+    is_premium: bool
