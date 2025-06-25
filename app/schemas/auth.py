@@ -1,4 +1,4 @@
-# app/schemas/auth.py - Clean and simple auth schemas
+# app/schemas/auth.py - Complete auth schemas with all required imports
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 
@@ -21,6 +21,13 @@ class SignupRequest(BaseModel):
     license_number: str = Field(..., min_length=3, max_length=20)
 
 
+class OAuthLoginRequest(BaseModel):
+    """OAuth login request (placeholder for future OAuth implementation)"""
+
+    provider: str = Field(..., description="OAuth provider (google, microsoft, etc.)")
+    access_token: str = Field(..., description="OAuth access token")
+
+
 class PasscodeSignupRequest(BaseModel):
     """Signup using CPA passcode (no password required initially)"""
 
@@ -41,6 +48,56 @@ class RefreshTokenRequest(BaseModel):
     """Request to refresh access token"""
 
     refresh_token: str
+
+
+class TokenRefreshRequest(BaseModel):
+    """Alternative name for refresh token request"""
+
+    refresh_token: str
+
+
+class PasswordResetRequest(BaseModel):
+    """Request to reset password"""
+
+    email: EmailStr = Field(..., description="Email address for password reset")
+
+
+class PasswordResetConfirm(BaseModel):
+    """Confirm password reset with token"""
+
+    token: str = Field(..., description="Password reset token")
+    new_password: str = Field(..., min_length=8, description="New password")
+
+
+class EmailVerificationRequest(BaseModel):
+    """Request to verify email"""
+
+    token: str = Field(..., description="Email verification token")
+
+
+class ChangePasswordRequest(BaseModel):
+    """Request to change password (when logged in)"""
+
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., min_length=8, description="New password")
+
+
+class LicenseVerificationRequest(BaseModel):
+    """Request to verify CPA license"""
+
+    license_number: str = Field(..., max_length=20, description="CPA license number")
+    last_name: str = Field(..., max_length=100, description="Last name on license")
+
+
+class LicenseVerificationResponse(BaseModel):
+    """Response for license verification"""
+
+    is_valid: bool
+    license_number: str
+    full_name: Optional[str] = None
+    expiration_date: Optional[str] = None
+    status: Optional[str] = None
+    message: str
 
 
 class TokenResponse(BaseModel):
