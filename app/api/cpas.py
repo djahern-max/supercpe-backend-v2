@@ -97,7 +97,7 @@ async def get_cpa_stats(db: Session = Depends(get_db)):
 
 @router.get("/lookup-passcode/{passcode}")
 async def lookup_passcode(passcode: str, db: Session = Depends(get_db)):
-    """Simple passcode lookup - just find the CPA"""
+    """Lookup CPA by passcode and check signup status"""
     try:
         # Direct database lookup
         cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
@@ -105,7 +105,7 @@ async def lookup_passcode(passcode: str, db: Session = Depends(get_db)):
         if not cpa:
             return {"found": False, "message": "No CPA found with that passcode"}
 
-        # Check if user exists
+        # Check if user already exists for this license
         user = db.query(User).filter(User.license_number == cpa.license_number).first()
 
         return {
@@ -120,27 +120,8 @@ async def lookup_passcode(passcode: str, db: Session = Depends(get_db)):
             "ready_for_signup": user is None,
         }
     except Exception as e:
-        return {"error": str(e), "found": False}
-
-
-@router.get("/lookup-passcode/{passcode}")
-async def lookup_passcode_temp(passcode: str, db: Session = Depends(get_db)):
-    """TEMP: Working endpoint for comparison"""
-    try:
-        cpa = db.query(CPA).filter(CPA.passcode == passcode).first()
-        if not cpa:
-            return {"found": False, "message": "No CPA found with that passcode"}
-
-        return {
-            "found": True,
-            "cpa": {
-                "license_number": cpa.license_number,
-                "full_name": cpa.full_name,
-                "status": cpa.status,
-                "passcode": cpa.passcode,
-            },
-        }
-    except Exception as e:
+        # Log the error for debugging
+        print(f"Error in lookup_passcode: {str(e)}")
         return {"error": str(e), "found": False}
 
 
