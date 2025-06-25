@@ -1,77 +1,106 @@
-# app/schemas/user.py
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from datetime import datetime
-from typing import Optional
+# app/models/user.py
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Float,
+)
+from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
+from app.core.database import Base
 
 
-class UserBase(BaseModel):
-    """Base user schema"""
+class User(Base):
+    __tablename__ = "users"
 
-    email: EmailStr = Field(..., description="User email address")
-    license_number: str = Field(..., max_length=20, description="CPA license number")
-    full_name: str = Field(..., max_length=200, description="Full name")
+    # Primary key
+    id = Column(Integer, primary_key=True, index=True)
 
+    # Basic user info
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    full_name = Column(String(200), nullable=False)
+    license_number = Column(String(20), index=True, nullable=False)
 
-class UserCreate(UserBase):
-    """Schema for creating a new user"""
+    # Authentication
+    hashed_password = Column(String(255), nullable=False)
 
-    password: str = Field(..., min_length=8, description="User password")
+    # Account status
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_verified = Column(Boolean, default=False, nullable=False)
 
+    # Timestamps
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    last_login = Column(DateTime, nullable=True)
 
-class UserUpdate(BaseModel):
-    """Schema for updating a user"""
+    # Trial/subscription tracking (keep if you're using trials)
+    trial_uploads_used = Column(Integer, default=0, nullable=False)
+    is_premium = Column(Boolean, default=False, nullable=False)
 
-    email: Optional[EmailStr] = None
-    full_name: Optional[str] = Field(None, max_length=200)
-    license_number: Optional[str] = Field(None, max_length=20)
+    # Relationships - FIXED with explicit foreign_keys
+    cpe_records = relationship(
+        "CPERecord", foreign_keys="CPERecord.user_id", back_populates="user"
+    )
+    subscriptions = relationship("Subscription", back_populates="user")
 
+    def __repr__(self):
+        return f"<User(id={self.id}, email='{self.email}', license='{self.license_number}')>"
 
-class UserResponse(UserBase):
-    """Schema for user responses"""
+    @property
+    def remaining_trial_uploads(self):
+        """Calculate remaining trial uploads"""
+        max_trial_uploads = 10  # or whatever your limit is
+        return max(0, max_trial_uploads - self.trial_uploads_used)
 
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    is_active: bool
-    is_verified: bool
-    is_premium: bool
-    trial_uploads_used: int
-    remaining_trial_uploads: int
-    created_at: datetime
-    updated_at: datetime
-    last_login: Optional[datetime] = None
-
-
-class UserProfileResponse(UserResponse):
-    """Extended user profile response with subscription info"""
-
-    can_upload: bool
-    subscription_status: Optional[str] = None
-
-
-class UserAuthResponse(BaseModel):
-    """Schema for authentication responses"""
-
-    access_token: str
-    token_type: str
-    user: UserResponse
+    @property
+    def can_upload(self):
+        """Check if user can upload more files"""
+        return self.is_premium or self.remaining_trial_uploads > 0
 
 
-class PasswordUpdate(BaseModel):
-    """Schema for password updates"""
+class Subscription(Base):
+    __tablename__ = "subscriptions"
 
-    current_password: str = Field(..., description="Current password")
-    new_password: str = Field(..., min_length=8, description="New password")
+    # Primary key
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
+    # Stripe subscription data
+    stripe_customer_id = Column(String(255), index=True)
+    stripe_subscription_id = Column(String(255), unique=True, index=True)
+    stripe_price_id = Column(String(255))
 
-class PasswordReset(BaseModel):
-    """Schema for password reset"""
+    # Subscription details
+    plan_type = Column(String(50), nullable=False)  # "monthly", "annual"
+    amount = Column(Float, nullable=False)  # Amount in USD
+    status = Column(
+        String(50), nullable=False
+    )  # "active", "past_due", "canceled", etc.
 
-    email: EmailStr = Field(..., description="Email address for password reset")
+    # Billing periods
+    current_period_start = Column(DateTime, nullable=False)
+    current_period_end = Column(DateTime, nullable=False)
+    cancel_at = Column(DateTime, nullable=True)
+    canceled_at = Column(DateTime, nullable=True)
 
+    # Timestamps
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
-class PasswordResetConfirm(BaseModel):
-    """Schema for password reset confirmation"""
+    # Relationships
+    user = relationship("User", back_populates="subscriptions")
 
-    token: str = Field(..., description="Password reset token")
-    new_password: str = Field(..., min_length=8, description="New password")
+    def __repr__(self):
+        return f"<Subscription(id={self.id}, user_id={self.user_id}, status='{self.status}')>"
+
+    @property
+    def is_active(self):
+        """Check if subscription is currently active"""
+        return self.status in ["active", "trialing"]
