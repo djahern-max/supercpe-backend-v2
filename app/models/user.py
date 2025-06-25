@@ -38,12 +38,14 @@ class User(Base):
     )
     last_login = Column(DateTime, nullable=True)
 
-    # Trial/subscription tracking (keep if you're using trials)
+    # Trial/subscription tracking
     trial_uploads_used = Column(Integer, default=0, nullable=False)
     is_premium = Column(Boolean, default=False, nullable=False)
 
-    # Relationships
-    cpe_records = relationship("CPERecord", back_populates="user")
+    # ===== FIXED RELATIONSHIPS with explicit foreign_keys =====
+    cpe_records = relationship(
+        "CPERecord", foreign_keys="CPERecord.user_id", back_populates="user"
+    )
     subscriptions = relationship("Subscription", back_populates="user")
 
     def __repr__(self):
