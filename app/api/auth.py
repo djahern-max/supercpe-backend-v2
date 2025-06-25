@@ -134,3 +134,80 @@ async def logout(
     except Exception:
         # Even if DB update fails, logout should succeed
         return {"success": True, "message": "Logged out successfully"}
+
+
+# Add this temporarily to your app/api/auth.py for debugging
+
+
+@router.post("/signup-with-passcode", response_model=TokenResponse)
+async def signup_with_passcode(
+    request: PasscodeSignupRequest, db: Session = Depends(get_db)
+):
+    """Create account using CPA passcode (no password required initially)"""
+    import traceback
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"🔍 DEBUG: Starting passcode signup for {request.email}")
+
+        # Check if secret key exists
+        from app.core.config import settings
+
+        if (
+            not settings.secret_key
+            or settings.secret_key == "your-secret-key-change-in-production"
+        ):
+            logger.error("❌ SECRET_KEY not properly configured")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Server configuration error: SECRET_KEY not set",
+            )
+
+        logger.info("✅ SECRET_KEY configured")
+
+        # Test database connection
+        try:
+            db.execute("SELECT 1")
+            logger.info("✅ Database connection working")
+        except Exception as db_error:
+            logger.error(f"❌ Database error: {str(db_error)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database connection error: {str(db_error)}",
+            )
+
+        # Initialize auth service
+        logger.info("🔍 Initializing AuthService")
+        auth_service = AuthService(db)
+
+        # Attempt user creation
+        logger.info(f"🔍 Creating user with passcode for {request.email}")
+        result = auth_service.create_user_with_passcode(
+            email=request.email, full_name=request.full_name, passcode=request.passcode
+        )
+
+        logger.info("✅ User created successfully")
+        return result
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except ValueError as e:
+        logger.error(f"❌ ValueError in signup: {str(e)}")
+        if "already exists" in str(e) or "already been used" in str(e):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        elif "Invalid passcode" in str(e):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        # Catch-all for unexpected errors
+        logger.error(f"❌ UNEXPECTED ERROR in signup: {str(e)}")
+        logger.error(f"❌ TRACEBACK: {traceback.format_exc()}")
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}",
+        )
